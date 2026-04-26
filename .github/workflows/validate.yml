@@ -1,0 +1,31 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Re-run weekly so an HA / HACS schema change doesn't sit unnoticed.
+    - cron: "0 0 * * 0"
+
+jobs:
+  hassfest:
+    name: hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    # The HACS action fetches manifest.json via raw.githubusercontent.com,
+    # which doesn't serve private repositories. Skip until the repo is
+    # made public; the job will run automatically afterwards.
+    if: ${{ github.event.repository.visibility == 'public' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration

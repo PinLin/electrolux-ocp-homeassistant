@@ -1,0 +1,140 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Electrolux",
+        "description": "Enter your Electrolux account credentials to link your appliances.",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "country_code": "Country Code (e.g., TW, FI, SE)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Integration",
+        "description": "The Electrolux integration needs to re-authenticate your account ({email})",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Electrolux API.",
+      "invalid_auth": "Invalid email or password.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "appliance_count": {
+        "name": "Appliances"
+      },
+      "last_update": {
+        "name": "Last Update"
+      },
+      "token_expiry": {
+        "name": "Token Expiry"
+      },
+      "connection_state": {
+        "name": "Connection State",
+        "state": {
+          "online": "Online",
+          "offline": "Offline",
+          "unknown": "Unknown"
+        }
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "humidity": {
+        "name": "Humidity"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
+      "pm2_5": {
+        "name": "PM2.5"
+      },
+      "pm10": {
+        "name": "PM10"
+      },
+      "eco2": {
+        "name": "eCO2"
+      },
+      "tvoc": {
+        "name": "TVOC"
+      },
+      "filter_life": {
+        "name": "Filter Life"
+      },
+      "rssi": {
+        "name": "Signal Strength"
+      },
+      "signal_quality": {
+        "name": "Signal Quality",
+        "state": {
+          "excellent": "Excellent",
+          "good": "Good",
+          "fair": "Fair",
+          "poor": "Poor",
+          "very_poor": "Very Poor"
+        }
+      },
+      "battery_level": {
+        "name": "Battery Level"
+      }
+    },
+    "binary_sensor": {
+      "filter_cover_open": {
+        "name": "Filter Cover Open"
+      },
+      "pm2_5_sensor_error": {
+        "name": "PM2.5 Sensor Error"
+      },
+      "tvoc_sensor_error": {
+        "name": "TVOC Sensor Error"
+      },
+      "temp_humidity_sensor_error": {
+        "name": "Temp/Humidity Sensor Error"
+      },
+      "fan_motor_error": {
+        "name": "Fan Motor Error"
+      },
+      "communication_error": {
+        "name": "Communication Error"
+      },
+      "filter_rfid_error": {
+        "name": "Filter RFID Error"
+      }
+    },
+    "switch": {
+      "ui_light": {
+        "name": "UI Light"
+      },
+      "safety_lock": {
+        "name": "Safety Lock"
+      },
+      "ionizer": {
+        "name": "Ionizer"
+      }
+    },
+    "fan": {
+      "air_purifier": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "auto": "Auto",
+              "manual": "Manual",
+              "smart": "Smart",
+              "sleep": "Sleep"
+            }
+          }
+        }
+      }
+    }
+  }
+}

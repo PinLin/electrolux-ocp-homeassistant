@@ -1,0 +1,18 @@
+{
+  "domain": "electrolux",
+  "name": "Electrolux",
+  "codeowners": [
+    "@pinlin"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/PinLin/electrolux-homeassistant",
+  "integration_type": "service",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/PinLin/electrolux-homeassistant/issues",
+  "loggers": [
+    "custom_components.electrolux"
+  ],
+  "requirements": [],
+  "version": "0.1.0"
+}

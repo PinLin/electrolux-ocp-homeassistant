@@ -1,0 +1,140 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "連線到 Electrolux",
+        "description": "輸入您的 Electrolux 帳號密碼來連結您的家電設備。",
+        "data": {
+          "username": "電子郵件",
+          "password": "密碼",
+          "country_code": "國家代碼 (例如 TW, FI, SE)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "重新驗證整合",
+        "description": "Electrolux 整合需要重新驗證您的帳號 ({email})",
+        "data": {
+          "password": "密碼"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "無法連線到 Electrolux API。",
+      "invalid_auth": "無效的電子郵件或密碼。",
+      "unknown": "發生未預期的錯誤。"
+    },
+    "abort": {
+      "already_configured": "裝置已設定過",
+      "reauth_successful": "重新驗證成功"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "appliance_count": {
+        "name": "家電數量"
+      },
+      "last_update": {
+        "name": "上次更新時間"
+      },
+      "token_expiry": {
+        "name": "權杖到期時間"
+      },
+      "connection_state": {
+        "name": "裝置連線狀態",
+        "state": {
+          "online": "線上",
+          "offline": "離線",
+          "unknown": "未知"
+        }
+      },
+      "temperature": {
+        "name": "溫度"
+      },
+      "humidity": {
+        "name": "濕度"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
+      "pm2_5": {
+        "name": "PM2.5"
+      },
+      "pm10": {
+        "name": "PM10"
+      },
+      "eco2": {
+        "name": "二氧化碳當量"
+      },
+      "tvoc": {
+        "name": "總揮發性有機物"
+      },
+      "filter_life": {
+        "name": "濾網壽命"
+      },
+      "rssi": {
+        "name": "訊號強度"
+      },
+      "signal_quality": {
+        "name": "訊號品質",
+        "state": {
+          "excellent": "極佳",
+          "good": "良好",
+          "fair": "普通",
+          "poor": "不佳",
+          "very_poor": "極差"
+        }
+      },
+      "battery_level": {
+        "name": "電池電量"
+      }
+    },
+    "binary_sensor": {
+      "filter_cover_open": {
+        "name": "濾網蓋開啟"
+      },
+      "pm2_5_sensor_error": {
+        "name": "PM2.5 感測器錯誤"
+      },
+      "tvoc_sensor_error": {
+        "name": "TVOC 感測器錯誤"
+      },
+      "temp_humidity_sensor_error": {
+        "name": "溫濕度感測器錯誤"
+      },
+      "fan_motor_error": {
+        "name": "風扇馬達錯誤"
+      },
+      "communication_error": {
+        "name": "通訊錯誤"
+      },
+      "filter_rfid_error": {
+        "name": "濾網 RFID 錯誤"
+      }
+    },
+    "switch": {
+      "ui_light": {
+        "name": "面板燈"
+      },
+      "safety_lock": {
+        "name": "安全鎖"
+      },
+      "ionizer": {
+        "name": "負離子"
+      }
+    },
+    "fan": {
+      "air_purifier": {
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "auto": "自動",
+              "manual": "手動",
+              "smart": "智慧",
+              "sleep": "睡眠"
+            }
+          }
+        }
+      }
+    }
+  }
+}

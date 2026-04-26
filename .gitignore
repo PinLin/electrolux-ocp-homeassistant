@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+*.skill
+dist/
+ha-reverse-engineering.skill
+ha-electrolux-dev.skill
+/analysis/jadx/
+/analysis/apk_unzipped/
+/downloads/
