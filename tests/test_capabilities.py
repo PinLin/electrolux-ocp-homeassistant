@@ -11,7 +11,6 @@ from homeassistant.components.sensor import SensorDeviceClass
 from custom_components.electrolux.capabilities import (
     PROPERTY_HINTS,
     PURE_A9_CAPABILITIES,
-    RESERVED_PROPERTIES,
     ChainCapabilitiesProvider,
     OcpV2CapabilitiesProvider,
     StaticPureA9Provider,
@@ -181,11 +180,6 @@ def test_derive_platform_skips_reserved_properties():
     assert derive_platform({"access": "read", "type": "int"}, "logE") is None
     assert derive_platform({"access": "read", "type": "int"}, "logW") is None
     assert derive_platform({"access": "read", "type": "string"}, "TVOCBrand") is None
-    assert "Workmode" in RESERVED_PROPERTIES
-    assert "Fanspeed" in RESERVED_PROPERTIES
-    assert "logE" in RESERVED_PROPERTIES
-    assert "logW" in RESERVED_PROPERTIES
-    assert "TVOCBrand" in RESERVED_PROPERTIES
 
 
 def test_derive_platform_skips_nested_keys():

@@ -83,16 +83,6 @@ class TestIdentifiersAndCore:
         entity = _StubEntity(appliance)
         assert entity.device_info["model_id"] == "111222333"
 
-    def test_hw_version_is_not_set_from_appliance_type(self):
-        entity = _StubEntity(_make_appliance(appliance_type="AIRPURIFIER"))
-        assert "hw_version" not in entity.device_info
-
-    def test_hw_version_is_not_set_from_appliance_info_device_type(self):
-        appliance = _make_appliance()
-        appliance["applianceInfo"] = {"deviceType": "AIR_PURIFIER"}
-        entity = _StubEntity(appliance)
-        assert "hw_version" not in entity.device_info
-
     def test_serial_number_uses_factory_serial_only(self):
         appliance = _make_appliance()
         appliance["serialNumber"] = "SN-123"

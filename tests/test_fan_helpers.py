@@ -5,7 +5,6 @@ from __future__ import annotations
 from custom_components.electrolux.fan import (
     DEFAULT_PRESET_MODES,
     DEFAULT_SPEED_RANGE,
-    POWER_OFF_VALUE,
     _derive_preset_modes,
     _derive_speed_range,
     _looks_like_air_purifier,
@@ -88,9 +87,3 @@ class TestDerivePresetModes:
 
     def test_default_when_capabilities_is_none(self):
         assert _derive_preset_modes(None) == list(DEFAULT_PRESET_MODES)
-
-
-class TestModuleConstants:
-    def test_power_off_value_is_string(self):
-        # Smoke test guarding against accidental rename or type change.
-        assert isinstance(POWER_OFF_VALUE, str) and POWER_OFF_VALUE

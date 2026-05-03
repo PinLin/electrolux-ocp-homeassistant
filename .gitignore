@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+.pytest_cache/
+.coverage
+coverage.xml
 *.skill
 dist/
 ha-reverse-engineering.skill

@@ -1,4 +1,4 @@
-"""Tests for capability-driven switch discovery and naming."""
+"""Tests for auto_translation_key — PascalCase → snake_case conversion."""
 
 from __future__ import annotations
 

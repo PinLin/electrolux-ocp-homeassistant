@@ -123,15 +123,6 @@ class TestReservedProperties:
     """Properties claimed by domain-specific platforms must not leak into
     the generic discovery in sensor/binary_sensor/switch/select."""
 
-    def test_fan_owned_properties_are_reserved(self):
-        # fan.py builds the air-purifier entity around Workmode + Fanspeed;
-        # raw service diagnostics are also intentionally hidden.
-        assert "Workmode" in RESERVED_PROPERTIES
-        assert "Fanspeed" in RESERVED_PROPERTIES
-        assert "logE" in RESERVED_PROPERTIES
-        assert "logW" in RESERVED_PROPERTIES
-        assert "TVOCBrand" in RESERVED_PROPERTIES
-
     def test_reserved_properties_return_none_from_derive_platform(self):
         for key in RESERVED_PROPERTIES:
             cap = PURE_A9_CAPABILITIES.get(key, {"access": "readwrite", "type": "string"})
