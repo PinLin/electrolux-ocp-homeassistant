@@ -6,9 +6,10 @@ import math
 from typing import Any
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util.percentage import (
+from homeassistant.util.percentage import (  # type: ignore[attr-defined]
     int_states_in_range,
     percentage_to_ranged_value,
     ranged_value_to_percentage,
@@ -16,8 +17,12 @@ from homeassistant.util.percentage import (
 
 from .api import extract_appliance_id, extract_appliance_model, extract_appliance_type
 from .const import DOMAIN
+from .coordinator import ElectroluxDataUpdateCoordinator
 from .entity import ElectroluxBaseEntity
+from .entity_helper import async_setup_appliance_entities
 from .models import ElectroluxConfigEntry
+
+PARALLEL_UPDATES = 0
 
 # Conservative defaults used when /capabilities returns 404 (the case for
 # PURE A9 air purifiers — OCP simply doesn't expose a capability document
@@ -28,7 +33,7 @@ DEFAULT_PRESET_MODES = ("Auto", "Manual")
 POWER_OFF_VALUE = "PowerOff"
 
 
-def _looks_like_air_purifier(appliance: dict, capabilities: dict) -> bool:
+def _looks_like_air_purifier(appliance: dict[str, Any], capabilities: dict[str, Any]) -> bool:
     """Heuristic: should we expose this appliance as a fan entity?"""
     appliance_type = (extract_appliance_type(appliance) or "").upper()
     model = (extract_appliance_model(appliance) or "").upper()
@@ -43,7 +48,7 @@ def _looks_like_air_purifier(appliance: dict, capabilities: dict) -> bool:
     return False
 
 
-def _derive_speed_range(capabilities: dict) -> tuple[int, int]:
+def _derive_speed_range(capabilities: dict[str, Any]) -> tuple[int, int]:
     fs = (capabilities or {}).get("Fanspeed") or {}
     lo, hi = fs.get("min"), fs.get("max")
     if isinstance(lo, int) and isinstance(hi, int) and lo < hi:
@@ -61,7 +66,7 @@ def _derive_speed_range(capabilities: dict) -> tuple[int, int]:
     return DEFAULT_SPEED_RANGE
 
 
-def _derive_preset_modes(capabilities: dict) -> list[str]:
+def _derive_preset_modes(capabilities: dict[str, Any]) -> list[str]:
     wm = (capabilities or {}).get("Workmode") or {}
     values = wm.get("values")
     if isinstance(values, dict) and values:
@@ -77,32 +82,23 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Electrolux fans based on a config entry."""
-    coordinator = entry.runtime_data.coordinator
-    seen_entities: set[str] = set()
+    await async_setup_appliance_entities(
+        hass, entry, async_add_entities, _build_entities_for_appliance
+    )
 
-    @callback
-    def async_add_new_entities() -> None:
-        new_entities: list[FanEntity] = []
-        appliances = coordinator.data.appliances if coordinator.data else []
-        for appliance in appliances:
-            appliance_id = extract_appliance_id(appliance)
-            if not appliance_id:
-                continue
 
-            capabilities = coordinator.get_capabilities(appliance_id) or {}
-            if not _looks_like_air_purifier(appliance, capabilities):
-                continue
-
-            uid = f"{entry.entry_id}_{appliance_id}_fan"
-            if uid not in seen_entities:
-                seen_entities.add(uid)
-                new_entities.append(ElectroluxAirPurifier(coordinator, appliance_id))
-
-        if new_entities:
-            async_add_entities(new_entities)
-
-    async_add_new_entities()
-    entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
+def _build_entities_for_appliance(
+    appliance: dict[str, Any],
+    coordinator: ElectroluxDataUpdateCoordinator,
+) -> list[Entity]:
+    """Build per-appliance fan entities for air-purifier-class appliances."""
+    appliance_id = extract_appliance_id(appliance)
+    if not appliance_id:
+        return []
+    capabilities = coordinator.get_capabilities(appliance_id) or {}
+    if not _looks_like_air_purifier(appliance, capabilities):
+        return []
+    return [ElectroluxAirPurifier(coordinator, appliance_id)]
 
 
 class ElectroluxAirPurifier(ElectroluxBaseEntity, FanEntity):
@@ -115,8 +111,11 @@ class ElectroluxAirPurifier(ElectroluxBaseEntity, FanEntity):
         | FanEntityFeature.TURN_OFF
     )
     _attr_translation_key = "air_purifier"
+    _state_attrs = ("is_on", "preset_mode", "percentage")
 
-    def __init__(self, coordinator, appliance_id: str) -> None:
+    def __init__(
+        self, coordinator: ElectroluxDataUpdateCoordinator, appliance_id: str
+    ) -> None:
         """Initialize the fan."""
         super().__init__(coordinator, appliance_id)
         self._attr_unique_id = f"{appliance_id}_fan"
@@ -138,7 +137,7 @@ class ElectroluxAirPurifier(ElectroluxBaseEntity, FanEntity):
         work_mode = appliance.get("properties", {}).get("reported", {}).get("Workmode")
         if work_mode is None:
             return None
-        return work_mode != POWER_OFF_VALUE
+        return bool(work_mode != POWER_OFF_VALUE)
 
     @property
     def preset_mode(self) -> str | None:

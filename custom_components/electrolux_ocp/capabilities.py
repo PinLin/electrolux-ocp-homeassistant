@@ -36,7 +36,7 @@ from homeassistant.const import (
     PERCENTAGE,
     UnitOfTemperature,
 )
-from homeassistant.helpers.entity import EntityCategory
+from homeassistant.const import EntityCategory
 
 from .api import (
     ElectroluxApiClient,
@@ -118,7 +118,6 @@ PROPERTY_HINTS: dict[str, dict[str, Any]] = {
     "FilterLife": {
         "translation_key": "filter_life",
         "native_unit_of_measurement": PERCENTAGE,
-        "icon": "mdi:filter-outline",
         "state_class": SensorStateClass.MEASUREMENT,
     },
     "RSSI": {
@@ -127,6 +126,8 @@ PROPERTY_HINTS: dict[str, dict[str, Any]] = {
         "native_unit_of_measurement": "dBm",
         "state_class": SensorStateClass.MEASUREMENT,
         "entity_category": EntityCategory.DIAGNOSTIC,
+        # Noisy diagnostic; users can opt in from the entity registry.
+        "disabled_by_default": True,
     },
     "BatteryLevel": {
         "translation_key": "battery_level",
@@ -137,11 +138,18 @@ PROPERTY_HINTS: dict[str, dict[str, Any]] = {
     # ---- string measurements (sensor) ----
     "SignalStrength": {
         "translation_key": "signal_quality",
-        "icon": "mdi:wifi",
         "entity_category": EntityCategory.DIAGNOSTIC,
         # NIU firmware reports "EXCELLENT", "GOOD", etc. Lowercased so it
         # matches the lowercase translation keys hassfest demands.
         "value_transform": str.lower,
+        # Guard the entity from a brand-new firmware string sneaking past
+        # the translation layer: anything outside this set logs a warning
+        # and surfaces as "unknown" until we add a translation.
+        "known_values": frozenset(
+            {"excellent", "good", "fair", "poor", "very_poor"}
+        ),
+        # Noisy diagnostic; users can opt in from the entity registry.
+        "disabled_by_default": True,
     },
     # ---- read-only boolean flags (binary_sensor) ----
     "DoorOpen": {

@@ -5,14 +5,24 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import extract_appliance_id
-from .capabilities import auto_translation_key, derive_ha_attrs, derive_platform
+from .capabilities import (
+    PROPERTY_HINTS,
+    auto_translation_key,
+    derive_ha_attrs,
+    derive_platform,
+)
 from .const import DOMAIN
+from .coordinator import ElectroluxDataUpdateCoordinator
 from .entity import ElectroluxBaseEntity
+from .entity_helper import async_setup_appliance_entities
 from .models import ElectroluxConfigEntry
+
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -21,52 +31,43 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Electrolux switches based on a config entry."""
-    coordinator = entry.runtime_data.coordinator
-    seen_entities: set[str] = set()
+    await async_setup_appliance_entities(
+        hass, entry, async_add_entities, _build_entities_for_appliance
+    )
 
-    @callback
-    def async_add_new_entities() -> None:
-        new_entities: list[SwitchEntity] = []
-        appliances = coordinator.data.appliances if coordinator.data else []
-        for appliance in appliances:
-            appliance_id = extract_appliance_id(appliance)
-            if not appliance_id:
-                continue
 
-            capabilities = coordinator.get_capabilities(appliance_id) or {}
-            reported = appliance.get("properties", {}).get("reported", {})
-
-            for key, cap in capabilities.items():
-                if derive_platform(cap, key) != "switch":
-                    continue
-                # Only register a switch once the appliance has actually
-                # reported the property at least once. Avoids creating
-                # phantom entities for capabilities the device declares
-                # but never broadcasts (seen on partially-provisioned
-                # appliances).
-                if key not in reported:
-                    continue
-
-                uid = f"{entry.entry_id}_{appliance_id}_{key.lower()}"
-                if uid not in seen_entities:
-                    seen_entities.add(uid)
-                    new_entities.append(
-                        ElectroluxSwitch(coordinator, appliance_id, key)
-                    )
-
-        if new_entities:
-            async_add_entities(new_entities)
-
-    async_add_new_entities()
-    entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
+def _build_entities_for_appliance(
+    appliance: dict[str, Any],
+    coordinator: ElectroluxDataUpdateCoordinator,
+) -> list[Entity]:
+    """Build per-appliance switch entities from capability data."""
+    appliance_id = extract_appliance_id(appliance)
+    if not appliance_id:
+        return []
+    entities: list[Entity] = []
+    capabilities = coordinator.get_capabilities(appliance_id) or {}
+    reported = appliance.get("properties", {}).get("reported", {})
+    for key, cap in capabilities.items():
+        if derive_platform(cap, key) != "switch":
+            continue
+        # Hinted keys (PROPERTY_HINTS) are hand-curated and registered
+        # eagerly — a partial provisioning gap shouldn't hide a known
+        # control. Un-hinted keys wait for first report to avoid phantom
+        # entities for capabilities a device declares but never broadcasts.
+        if key not in PROPERTY_HINTS and key not in reported:
+            continue
+        entities.append(ElectroluxSwitch(coordinator, appliance_id, key))
+    return entities
 
 
 class ElectroluxSwitch(ElectroluxBaseEntity, SwitchEntity):
     """Switch for any writeable boolean capability the appliance exposes."""
 
+    _state_attrs = ("is_on",)
+
     def __init__(
         self,
-        coordinator,
+        coordinator: ElectroluxDataUpdateCoordinator,
         appliance_id: str,
         property_key: str,
     ) -> None:
@@ -80,8 +81,6 @@ class ElectroluxSwitch(ElectroluxBaseEntity, SwitchEntity):
         cap = capabilities.get(property_key, {})
         attrs = derive_ha_attrs(cap, property_key)
         self._attr_translation_key = attrs.get("translation_key") or auto_translation_key(property_key)
-        if "icon" in attrs:
-            self._attr_icon = attrs["icon"]
         if "entity_category" in attrs:
             self._attr_entity_category = attrs["entity_category"]
 
@@ -91,7 +90,8 @@ class ElectroluxSwitch(ElectroluxBaseEntity, SwitchEntity):
         appliance = self._appliance
         if not appliance:
             return None
-        return appliance.get("properties", {}).get("reported", {}).get(self._property_key)
+        value = appliance.get("properties", {}).get("reported", {}).get(self._property_key)
+        return None if value is None else bool(value)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""

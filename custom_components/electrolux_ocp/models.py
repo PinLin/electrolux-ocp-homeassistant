@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from .coordinator import ElectroluxDataUpdateCoordinator
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, kw_only=True)
 class ElectroluxData:
     """Snapshot returned by the coordinator each refresh."""
 
@@ -21,7 +21,7 @@ class ElectroluxData:
     capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, kw_only=True)
 class ElectroluxRuntimeData:
     """Runtime objects attached to ConfigEntry.runtime_data."""
 

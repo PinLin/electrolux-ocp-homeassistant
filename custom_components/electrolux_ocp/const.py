@@ -3,9 +3,34 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
+from homeassistant.const import CONF_PASSWORD as CONF_PASSWORD, CONF_USERNAME as CONF_USERNAME
 
-DOMAIN = "electrolux"
+__all__ = [
+    "CONF_ACCESS_TOKEN",
+    "CONF_API_BASE_URL",
+    "CONF_API_KEY",
+    "CONF_COUNTRY_CODE",
+    "CONF_PASSWORD",
+    "CONF_REFRESH_TOKEN",
+    "CONF_USERNAME",
+    "CONF_WS_BASE_URL",
+    "DEFAULT_API_BASE_URL",
+    "DEFAULT_REQUEST_TIMEOUT",
+    "DEFAULT_WEBSOCKET_BASE_URL",
+    "DOMAIN",
+    "NEW_APPLIANCE_SIGNAL",
+    "POLL_INTERVAL",
+    "REDACT_KEYS",
+    "USER_AGENT",
+]
+
+DOMAIN = "electrolux_ocp"
+
+# Dispatcher signal fired by the coordinator when a brand-new appliance ID
+# appears in a polling refresh. Platforms subscribe via entity_helper so
+# entities for the new appliance get added without a full re-scan on every
+# WS message.
+NEW_APPLIANCE_SIGNAL = "electrolux_ocp_new_appliance"
 
 CONF_ACCESS_TOKEN = "access_token"
 CONF_API_BASE_URL = "api_base_url"

@@ -9,9 +9,10 @@ from datetime import datetime
 from typing import Any
 
 from aiohttp import WSMsgType, WSServerHandshakeError
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -32,9 +33,10 @@ from .const import (
     CONF_API_BASE_URL,
     CONF_WS_BASE_URL,
     DOMAIN,
+    NEW_APPLIANCE_SIGNAL,
     POLL_INTERVAL,
 )
-from .models import ElectroluxData
+from .models import ElectroluxConfigEntry, ElectroluxData
 
 WS_BACKOFF_SECONDS = 30
 WS_RECONNECT_DELAY = 5
@@ -44,6 +46,12 @@ WS_NO_DATA_RETRY_SECONDS = 5
 # WS 401/403 while the token is fresh almost certainly is not an auth issue,
 # so we must not refresh-bomb OCP into 429.
 WS_TOKEN_FRESH_SECONDS = 1500  # 25 min
+# Threshold for surfacing a repair issue. With a 30 min poll cadence this
+# means the cloud has been unreachable for ~90 minutes before the user gets
+# a notification — long enough to filter transient network blips, short
+# enough that an actually broken integration doesn't go unnoticed.
+POLLING_FAILURE_THRESHOLD = 3
+ISSUE_POLLING_FAILING = "polling_failing"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,14 +59,14 @@ LOGGER = logging.getLogger(__name__)
 class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
     """Coordinate Electrolux API fetches and WebSocket updates."""
 
-    config_entry: ConfigEntry
+    config_entry: ElectroluxConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
         *,
         client: ElectroluxApiClient,
-        entry: ConfigEntry,
+        entry: ElectroluxConfigEntry,
         capabilities_provider: CapabilitiesProvider | None = None,
     ) -> None:
         super().__init__(
@@ -67,9 +75,13 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
             name=f"{DOMAIN}_{entry.entry_id}",
             update_interval=POLL_INTERVAL,
             config_entry=entry,
+            # WS pushes can be very chatty (one metric → one set_updated_data).
+            # Skip listener fan-out when the new data object is == previous,
+            # which is what happens when an OCP heartbeat ships unchanged values.
+            always_update=False,
         )
         self._client = client
-        self._ws_task: asyncio.Task | None = None
+        self._ws_task: asyncio.Task[None] | None = None
         self._ws_active = False
         # Provider chain decides where capability data comes from for each
         # appliance: OCP first, hand-curated PURE A9 fallback second.
@@ -81,6 +93,14 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
         # Manually-tracked timestamp of the last successful refresh.
         # DataUpdateCoordinator only exposes a bool last_update_success.
         self.last_success_at: datetime | None = None
+        # Appliance IDs we've already dispatched a NEW_APPLIANCE_SIGNAL for.
+        # Seeded after the first successful refresh so the initial fleet
+        # doesn't double-fire (platforms will pick those up directly from
+        # coordinator.data in their async_setup_entry).
+        self._dispatched_appliance_ids: set[str] = set()
+        # Consecutive polling failures, used to gate the polling_failing
+        # repair issue. Reset on every successful refresh.
+        self._consecutive_failures: int = 0
         # Atomic persistence: every time the client applies a new token
         # response we immediately write it to the entry. Removes the class of
         # bugs where a refreshed token was lost in memory and the next call
@@ -135,7 +155,8 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
             }
             self._appliance_index_cache = (self.data, index)
             return index.get(appliance_id)
-        return cache[1].get(appliance_id)
+        result: dict[str, Any] | None = cache[1].get(appliance_id)
+        return result
 
     def _persist_tokens_now(self) -> None:
         """Write current tokens to the config entry unconditionally."""
@@ -163,9 +184,24 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
     async def _async_update_data(self) -> ElectroluxData:
         """Fetch appliance data from Electrolux."""
         try:
+            data = await self._do_update_data()
+        except UpdateFailed:
+            self._note_polling_failure()
+            raise
+        else:
+            self._note_polling_success()
+            return data
+
+    async def _do_update_data(self) -> ElectroluxData:
+        """The actual fetch; wrapped above for repair-issue book-keeping."""
+        try:
             await self._client.async_ensure_valid_token()
         except ElectroluxAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="invalid_auth",
+                translation_placeholders={"reason": str(err)},
+            ) from err
 
         # One-shot migration for entries created before regional URLs were cached.
         if not self._client.ws_base_url:
@@ -184,16 +220,36 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
                 appliances = await self._client.async_get_appliances()
             except ElectroluxRefreshThrottled as err:
                 # Cooldown blocked the refresh; back off one cycle.
-                raise UpdateFailed(str(err)) from err
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="refresh_throttled",
+                    translation_placeholders={"reason": str(err)},
+                ) from err
             except ElectroluxRateLimitError as err:
                 # OCP throttled us; coordinator will retry next interval.
-                raise UpdateFailed(str(err)) from err
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="rate_limited",
+                    translation_placeholders={"reason": str(err)},
+                ) from err
             except ElectroluxAuthError as err:
-                raise ConfigEntryAuthFailed(f"Auth failed and refresh failed: {err}") from err
+                raise ConfigEntryAuthFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="invalid_auth",
+                    translation_placeholders={"reason": str(err)},
+                ) from err
             except ElectroluxApiError as err:
-                raise UpdateFailed(str(err)) from err
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="cannot_connect",
+                    translation_placeholders={"reason": str(err)},
+                ) from err
         except ElectroluxApiError as err:
-            raise UpdateFailed(str(err)) from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"reason": str(err)},
+            ) from err
 
         try:
             user = await self._client.async_get_current_user()
@@ -201,6 +257,17 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
             user = None
 
         await self._fetch_missing_capabilities(list(appliances))
+
+        # Drop device-registry entries for appliances no longer on the
+        # account. Runs every successful poll so removals propagate within
+        # one cycle, not just at setup time.
+        self._async_cleanup_stale_devices(list(appliances))
+
+        # Tell platforms about appliances that weren't there last time.
+        # Skipped on the very first refresh because platforms haven't
+        # subscribed yet — they read coordinator.data directly during their
+        # async_setup_entry and seed entities from that.
+        self._async_announce_new_appliances(list(appliances))
 
         # NOTE: WS task lifecycle is NOT tied to polling cadence — the task is
         # started once at setup time and self-heals via its own reconnect
@@ -226,7 +293,7 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
         # Flip the flag BEFORE scheduling so a concurrent caller doesn't double-schedule.
         self._ws_active = True
         self._ws_task = self.hass.async_create_background_task(
-            self._async_websocket_loop(), "electrolux_ws"
+            self._async_websocket_loop(), "electrolux_ocp_ws"
         )
 
     async def _async_websocket_loop(self) -> None:
@@ -235,7 +302,13 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
         Single-cycle guarantees: at most ONE token refresh attempt per
         connection cycle, and never refresh while the access token is still
         fresh. This is what kept us out of the cas_3404 storm.
+
+        Resync-on-reconnect: every successful (re)connect — except the first
+        one right after setup, which the config-entry first refresh already
+        covered — schedules a non-blocking REST refresh so any state that
+        drifted during the silent gap is healed.
         """
+        first_connect = True
         try:
             while self._ws_active:
                 appliance_ids: list[str] = []
@@ -255,6 +328,14 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
                 try:
                     async with self._client.ws_connect(appliance_ids) as ws:
                         LOGGER.info("Electrolux WebSocket connected")
+                        if not first_connect:
+                            # Non-blocking — must not delay reading WS msgs.
+                            LOGGER.debug("WebSocket reconnected; scheduling REST resync")
+                            self.hass.async_create_task(
+                                self.async_request_refresh(),
+                                name="electrolux_ocp_ws_resync",
+                            )
+                        first_connect = False
                         async for msg in ws:
                             if msg.type == WSMsgType.TEXT:
                                 await self._handle_ws_message(msg.json())
@@ -399,6 +480,78 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
                     capabilities=self.data.capabilities,
                 )
             )
+
+    def _note_polling_failure(self) -> None:
+        """Track failures and surface a repair issue once over the threshold."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures < POLLING_FAILURE_THRESHOLD:
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"{ISSUE_POLLING_FAILING}_{self.config_entry.entry_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_POLLING_FAILING,
+            translation_placeholders={"failures": str(self._consecutive_failures)},
+        )
+
+    def _note_polling_success(self) -> None:
+        """Reset the failure counter and clear any active polling issue."""
+        if self._consecutive_failures >= POLLING_FAILURE_THRESHOLD:
+            ir.async_delete_issue(
+                self.hass,
+                DOMAIN,
+                f"{ISSUE_POLLING_FAILING}_{self.config_entry.entry_id}",
+            )
+        self._consecutive_failures = 0
+
+    def _async_announce_new_appliances(self, appliances: list[dict[str, Any]]) -> None:
+        """Dispatch NEW_APPLIANCE_SIGNAL for each appliance ID never seen before."""
+        current_ids: set[str] = {
+            aid
+            for a in appliances
+            if (aid := extract_appliance_id(a)) is not None
+        }
+        first_refresh = not self._dispatched_appliance_ids and self.data is None
+        new_ids = current_ids - self._dispatched_appliance_ids
+        self._dispatched_appliance_ids = current_ids
+        if first_refresh or not new_ids:
+            return
+        appliance_by_id = {extract_appliance_id(a): a for a in appliances}
+        for aid in new_ids:
+            appliance = appliance_by_id.get(aid)
+            if appliance is None:
+                continue
+            async_dispatcher_send(
+                self.hass,
+                f"{NEW_APPLIANCE_SIGNAL}_{self.config_entry.entry_id}",
+                appliance,
+            )
+
+    def _async_cleanup_stale_devices(self, appliances: list[dict[str, Any]]) -> None:
+        """Remove device-registry entries for appliances no longer on the account."""
+        known_ids = {
+            extract_appliance_id(a)
+            for a in appliances
+            if extract_appliance_id(a)
+        }
+        device_reg = dr.async_get(self.hass)
+        for device in dr.async_entries_for_config_entry(device_reg, self.config_entry.entry_id):
+            owned_appliance_id: str | None = None
+            for domain, identifier in device.identifiers:
+                if domain == DOMAIN:
+                    owned_appliance_id = identifier
+                    break
+            if owned_appliance_id is None:
+                continue
+            if owned_appliance_id not in known_ids:
+                LOGGER.info(
+                    "Removing stale device %s (%s) — not present on account anymore",
+                    device.name or device.id,
+                    owned_appliance_id,
+                )
+                device_reg.async_remove_device(device.id)
 
     async def async_stop_websocket(self) -> None:
         """Stop the WebSocket task and wait for it to finish."""

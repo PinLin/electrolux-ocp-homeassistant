@@ -28,6 +28,29 @@
       "reauth_successful": "Re-authentication was successful"
     }
   },
+  "issues": {
+    "polling_failing": {
+      "title": "Cannot reach Electrolux",
+      "description": "Home Assistant has not been able to refresh data from the Electrolux cloud for the last {failures} polling cycles. Real-time updates may also be stalled. Check your network connection, the Electrolux service status, and the integration's diagnostic sensors. If the problem persists, open the integration and try **Reconfigure** to re-authenticate."
+    }
+  },
+  "exceptions": {
+    "auth_token_missing": {
+      "message": "Authentication token missing and no password stored to log in. Reconfigure the integration."
+    },
+    "invalid_auth": {
+      "message": "Authentication failed: {reason}"
+    },
+    "cannot_connect": {
+      "message": "Cannot connect to the Electrolux API: {reason}"
+    },
+    "rate_limited": {
+      "message": "Electrolux is currently rate-limiting requests: {reason}"
+    },
+    "refresh_throttled": {
+      "message": "Token refresh skipped due to local cooldown: {reason}"
+    }
+  },
   "entity": {
     "sensor": {
       "appliance_count": {

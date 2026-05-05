@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -10,8 +11,9 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
 )
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import EntityCategory
+from homeassistant.core import HomeAssistant
+from homeassistant.const import EntityCategory
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -20,10 +22,21 @@ from .api import (
     extract_state_value,
     summarize_appliance,
 )
-from .capabilities import auto_translation_key, derive_ha_attrs, derive_platform
+from .capabilities import (
+    PROPERTY_HINTS,
+    auto_translation_key,
+    derive_ha_attrs,
+    derive_platform,
+)
 from .const import DOMAIN
+from .coordinator import ElectroluxDataUpdateCoordinator
 from .entity import ElectroluxBaseEntity
+from .entity_helper import async_setup_appliance_entities
 from .models import ElectroluxConfigEntry
+
+_LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -33,7 +46,6 @@ async def async_setup_entry(
 ) -> None:
     """Set up Electrolux sensors based on a config entry."""
     coordinator = entry.runtime_data.coordinator
-    seen_entities: set[str] = set()
 
     async_add_entities([
         ElectroluxAccountSensor(coordinator, entry.entry_id),
@@ -41,54 +53,52 @@ async def async_setup_entry(
         ElectroluxLastUpdateSensor(coordinator, entry.entry_id),
     ])
 
-    @callback
-    def async_add_new_entities() -> None:
-        new_entities: list[SensorEntity] = []
-        appliances = coordinator.data.appliances if coordinator.data else []
-        for appliance in appliances:
-            appliance_id = extract_appliance_id(appliance)
-            if not appliance_id:
-                continue
-
-            # Connection state diagnostic sensor — always present, not
-            # capability-driven (this isn't a property of the device, it's
-            # the cloud's view of the device's reachability).
-            uid = f"{entry.entry_id}_{appliance_id}_state"
-            if uid not in seen_entities:
-                seen_entities.add(uid)
-                new_entities.append(ElectroluxApplianceStateSensor(coordinator, appliance_id))
-
-            capabilities = coordinator.get_capabilities(appliance_id) or {}
-            reported = appliance.get("properties", {}).get("reported", {})
-
-            for key, cap in capabilities.items():
-                if derive_platform(cap, key) != "sensor":
-                    continue
-                if key not in reported:
-                    continue
-
-                uid = f"{entry.entry_id}_{appliance_id}_{key.lower()}"
-                if uid not in seen_entities:
-                    seen_entities.add(uid)
-                    new_entities.append(
-                        ElectroluxDynamicPropertySensor(coordinator, appliance_id, key)
-                    )
-
-        if new_entities:
-            async_add_entities(new_entities)
-
-    async_add_new_entities()
-    entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
+    await async_setup_appliance_entities(
+        hass, entry, async_add_entities, _build_entities_for_appliance
+    )
 
 
-class ElectroluxAccountSensor(CoordinatorEntity, SensorEntity):
+def _build_entities_for_appliance(
+    appliance: dict[str, Any],
+    coordinator: ElectroluxDataUpdateCoordinator,
+) -> list[Entity]:
+    """Build per-appliance sensor entities from coordinator capability data."""
+    appliance_id = extract_appliance_id(appliance)
+    if not appliance_id:
+        return []
+
+    entities: list[Entity] = [
+        # Always present, not capability-driven — surfaces the cloud's view
+        # of reachability separately from any reported state.
+        ElectroluxApplianceStateSensor(coordinator, appliance_id),
+    ]
+
+    capabilities = coordinator.get_capabilities(appliance_id) or {}
+    reported = appliance.get("properties", {}).get("reported", {})
+    for key, cap in capabilities.items():
+        if derive_platform(cap, key) != "sensor":
+            continue
+        # Hinted keys register eagerly; un-hinted keys wait for first report.
+        if key not in PROPERTY_HINTS and key not in reported:
+            continue
+        entities.append(
+            ElectroluxDynamicPropertySensor(coordinator, appliance_id, key)
+        )
+
+    return entities
+
+
+class ElectroluxAccountSensor(
+    CoordinatorEntity[ElectroluxDataUpdateCoordinator], SensorEntity
+):
     """Account-level summary sensor (count of linked appliances)."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "appliance_count"
-    _attr_icon = "mdi:home-analytics"
 
-    def __init__(self, coordinator, entry_id: str) -> None:
+    def __init__(
+        self, coordinator: ElectroluxDataUpdateCoordinator, entry_id: str
+    ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_account"
         self.entity_id = f"sensor.{DOMAIN}_appliances"
@@ -110,7 +120,9 @@ class ElectroluxAccountSensor(CoordinatorEntity, SensorEntity):
         }
 
 
-class ElectroluxTokenExpirySensor(CoordinatorEntity, SensorEntity):
+class ElectroluxTokenExpirySensor(
+    CoordinatorEntity[ElectroluxDataUpdateCoordinator], SensorEntity
+):
     """Diagnostic sensor exposing access-token expiry and last refresh result.
 
     Lets the user (or automations) notice when token rotation is misbehaving
@@ -119,11 +131,12 @@ class ElectroluxTokenExpirySensor(CoordinatorEntity, SensorEntity):
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:key-chain"
     _attr_has_entity_name = True
     _attr_translation_key = "token_expiry"
 
-    def __init__(self, coordinator, entry_id: str) -> None:
+    def __init__(
+        self, coordinator: ElectroluxDataUpdateCoordinator, entry_id: str
+    ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_token_expiry"
         self.entity_id = f"sensor.{DOMAIN}_token_expiry"
@@ -149,7 +162,9 @@ class ElectroluxTokenExpirySensor(CoordinatorEntity, SensorEntity):
         }
 
 
-class ElectroluxLastUpdateSensor(CoordinatorEntity, SensorEntity):
+class ElectroluxLastUpdateSensor(
+    CoordinatorEntity[ElectroluxDataUpdateCoordinator], SensorEntity
+):
     """Timestamp of the most recent successful coordinator refresh.
 
     Useful for "data is stale" automations and for diagnosing whether
@@ -158,11 +173,12 @@ class ElectroluxLastUpdateSensor(CoordinatorEntity, SensorEntity):
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:clock-check-outline"
     _attr_has_entity_name = True
     _attr_translation_key = "last_update"
 
-    def __init__(self, coordinator, entry_id: str) -> None:
+    def __init__(
+        self, coordinator: ElectroluxDataUpdateCoordinator, entry_id: str
+    ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_last_update"
         self.entity_id = f"sensor.{DOMAIN}_last_update"
@@ -175,11 +191,13 @@ class ElectroluxLastUpdateSensor(CoordinatorEntity, SensorEntity):
 class ElectroluxApplianceStateSensor(ElectroluxBaseEntity, SensorEntity):
     """Connection state diagnostic sensor for an appliance."""
 
-    _attr_icon = "mdi:information-outline"
     _attr_translation_key = "connection_state"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _state_attrs = ("native_value",)
 
-    def __init__(self, coordinator, appliance_id: str) -> None:
+    def __init__(
+        self, coordinator: ElectroluxDataUpdateCoordinator, appliance_id: str
+    ) -> None:
         super().__init__(coordinator, appliance_id)
         self._attr_unique_id = f"{appliance_id}_connection_state"
         self.entity_id = f"sensor.{DOMAIN}_{appliance_id}_connection_state"
@@ -195,7 +213,14 @@ class ElectroluxApplianceStateSensor(ElectroluxBaseEntity, SensorEntity):
 class ElectroluxDynamicPropertySensor(ElectroluxBaseEntity, SensorEntity):
     """Sensor entity for any sensor-typed capability the appliance exposes."""
 
-    def __init__(self, coordinator, appliance_id: str, property_key: str) -> None:
+    _state_attrs = ("native_value",)
+
+    def __init__(
+        self,
+        coordinator: ElectroluxDataUpdateCoordinator,
+        appliance_id: str,
+        property_key: str,
+    ) -> None:
         super().__init__(coordinator, appliance_id)
         self._property_key = property_key
         self._attr_unique_id = f"{appliance_id}_{property_key.lower()}"
@@ -210,14 +235,19 @@ class ElectroluxDynamicPropertySensor(ElectroluxBaseEntity, SensorEntity):
         self._attr_device_class = attrs.get("device_class")
         self._attr_native_unit_of_measurement = attrs.get("native_unit_of_measurement")
         self._attr_state_class = attrs.get("state_class")
-        if "icon" in attrs:
-            self._attr_icon = attrs["icon"]
         if "entity_category" in attrs:
             self._attr_entity_category = attrs["entity_category"]
+        if attrs.get("disabled_by_default"):
+            self._attr_entity_registry_enabled_default = False
         # Optional callable applied to the raw reported value before HA sees
         # it. Used to e.g. lowercase enum-like strings so they match the
         # lowercase translation keys hassfest demands.
         self._value_transform = attrs.get("value_transform")
+        # Optional whitelist for enum-style sensors. Anything outside the
+        # set gets a one-shot warning and is surfaced as "unknown" so the
+        # frontend doesn't display an untranslated raw cloud value.
+        self._known_values: frozenset[str] | None = attrs.get("known_values")
+        self._warned_unknown_values: set[str] = set()
 
     @property
     def native_value(self) -> Any:
@@ -225,6 +255,21 @@ class ElectroluxDynamicPropertySensor(ElectroluxBaseEntity, SensorEntity):
         if not appliance:
             return None
         value = appliance.get("properties", {}).get("reported", {}).get(self._property_key)
-        if value is None or self._value_transform is None:
-            return value
-        return self._value_transform(value)
+        if value is None:
+            return None
+        if self._value_transform is not None:
+            value = self._value_transform(value)
+        if self._known_values is not None and isinstance(value, str):
+            if value not in self._known_values:
+                if value not in self._warned_unknown_values:
+                    self._warned_unknown_values.add(value)
+                    _LOGGER.warning(
+                        "Unknown value %r for %s sensor on appliance %s; "
+                        "reporting 'unknown'. Please open an issue so the "
+                        "translation can be added.",
+                        value,
+                        self._property_key,
+                        self._appliance_id,
+                    )
+                return "unknown"
+        return value

@@ -10,15 +10,31 @@ OCP values are sent through the same command shape as switches: a single
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.select import SelectEntity
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from typing import Any
+
 from .api import extract_appliance_id
-from .capabilities import auto_translation_key, derive_ha_attrs, derive_platform
+from .capabilities import (
+    PROPERTY_HINTS,
+    auto_translation_key,
+    derive_ha_attrs,
+    derive_platform,
+)
 from .const import DOMAIN
+from .coordinator import ElectroluxDataUpdateCoordinator
 from .entity import ElectroluxBaseEntity
+from .entity_helper import async_setup_appliance_entities
 from .models import ElectroluxConfigEntry
+
+_LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -27,47 +43,40 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Electrolux selects based on a config entry."""
-    coordinator = entry.runtime_data.coordinator
-    seen_entities: set[str] = set()
+    await async_setup_appliance_entities(
+        hass, entry, async_add_entities, _build_entities_for_appliance
+    )
 
-    @callback
-    def async_add_new_entities() -> None:
-        new_entities: list[SelectEntity] = []
-        appliances = coordinator.data.appliances if coordinator.data else []
-        for appliance in appliances:
-            appliance_id = extract_appliance_id(appliance)
-            if not appliance_id:
-                continue
 
-            capabilities = coordinator.get_capabilities(appliance_id) or {}
-            reported = appliance.get("properties", {}).get("reported", {})
-
-            for key, cap in capabilities.items():
-                if derive_platform(cap, key) != "select":
-                    continue
-                if key not in reported:
-                    continue
-
-                uid = f"{entry.entry_id}_{appliance_id}_{key.lower()}"
-                if uid not in seen_entities:
-                    seen_entities.add(uid)
-                    new_entities.append(
-                        ElectroluxSelect(coordinator, appliance_id, key)
-                    )
-
-        if new_entities:
-            async_add_entities(new_entities)
-
-    async_add_new_entities()
-    entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
+def _build_entities_for_appliance(
+    appliance: dict[str, Any],
+    coordinator: ElectroluxDataUpdateCoordinator,
+) -> list[Entity]:
+    """Build per-appliance select entities from capability data."""
+    appliance_id = extract_appliance_id(appliance)
+    if not appliance_id:
+        return []
+    entities: list[Entity] = []
+    capabilities = coordinator.get_capabilities(appliance_id) or {}
+    reported = appliance.get("properties", {}).get("reported", {})
+    for key, cap in capabilities.items():
+        if derive_platform(cap, key) != "select":
+            continue
+        # Hinted keys register eagerly; un-hinted keys wait for first report.
+        if key not in PROPERTY_HINTS and key not in reported:
+            continue
+        entities.append(ElectroluxSelect(coordinator, appliance_id, key))
+    return entities
 
 
 class ElectroluxSelect(ElectroluxBaseEntity, SelectEntity):
     """Select for any writeable string capability with a values enum."""
 
+    _state_attrs = ("current_option",)
+
     def __init__(
         self,
-        coordinator,
+        coordinator: ElectroluxDataUpdateCoordinator,
         appliance_id: str,
         property_key: str,
     ) -> None:
@@ -80,8 +89,6 @@ class ElectroluxSelect(ElectroluxBaseEntity, SelectEntity):
         cap = capabilities.get(property_key, {})
         attrs = derive_ha_attrs(cap, property_key)
         self._attr_translation_key = attrs.get("translation_key") or auto_translation_key(property_key)
-        if "icon" in attrs:
-            self._attr_icon = attrs["icon"]
         if "entity_category" in attrs:
             self._attr_entity_category = attrs["entity_category"]
 
@@ -90,6 +97,7 @@ class ElectroluxSelect(ElectroluxBaseEntity, SelectEntity):
         # can revisit by adding a per-key transform in PROPERTY_HINTS.
         values = cap.get("values") or {}
         self._attr_options = list(values.keys())
+        self._warned_unknown_values: set[str] = set()
 
     @property
     def current_option(self) -> str | None:
@@ -99,7 +107,23 @@ class ElectroluxSelect(ElectroluxBaseEntity, SelectEntity):
         value = appliance.get("properties", {}).get("reported", {}).get(self._property_key)
         if value is None:
             return None
-        return str(value)
+        option = str(value)
+        # HA logs an "Invalid option" warning every state read if we return a
+        # value that's not in self._attr_options. Guard once, log once,
+        # surface as None so the entity goes unavailable rather than spamming.
+        if self._attr_options and option not in self._attr_options:
+            if option not in self._warned_unknown_values:
+                self._warned_unknown_values.add(option)
+                _LOGGER.warning(
+                    "Unknown option %r for %s on appliance %s; not in declared "
+                    "options %s. Please open an issue.",
+                    option,
+                    self._property_key,
+                    self._appliance_id,
+                    self._attr_options,
+                )
+            return None
+        return option
 
     async def async_select_option(self, option: str) -> None:
         client = self.coordinator.client

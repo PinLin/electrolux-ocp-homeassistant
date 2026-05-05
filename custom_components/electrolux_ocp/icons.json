@@ -1,0 +1,24 @@
+{
+  "entity": {
+    "sensor": {
+      "appliance_count": {
+        "default": "mdi:home-analytics"
+      },
+      "token_expiry": {
+        "default": "mdi:key-chain"
+      },
+      "last_update": {
+        "default": "mdi:clock-check-outline"
+      },
+      "connection_state": {
+        "default": "mdi:information-outline"
+      },
+      "filter_life": {
+        "default": "mdi:filter-outline"
+      },
+      "signal_quality": {
+        "default": "mdi:wifi"
+      }
+    }
+  }
+}

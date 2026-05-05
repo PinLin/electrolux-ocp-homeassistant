@@ -358,7 +358,8 @@ def _url_encode(value: Any) -> str:
 
 def _get_oauth1_signature(secret_key: str, http_method: str, url: str, request_params: dict[str, Any]) -> str:
     u = urllib.parse.urlparse(url)
-    normalized_url = f"https://{u.hostname.lower()}{u.path}"
+    hostname = (u.hostname or "").lower()
+    normalized_url = f"https://{hostname}{u.path}"
     query_string = "&".join(f"{k}={_url_encode(request_params[k])}" for k in sorted(request_params.keys()) if request_params[k] is not None)
     base_string = f"{http_method.upper()}&{_url_encode(normalized_url)}&{_url_encode(query_string)}"
     raw_hmac = hmac.new(base64.b64decode(secret_key.encode("utf-8")), base_string.encode("utf-8"), hashlib.sha1).digest()
@@ -488,6 +489,14 @@ class ElectroluxApiClient:
                 if response.status in (401, 403):
                     raise ElectroluxAuthError(f"{response.status}: {text or 'Authentication failed'}")
 
+                # Map 429 (and OCP's cas_3404) uniformly to RateLimitError so
+                # callers (config_flow setup, coordinator, WS loop) can map to
+                # ConfigEntryNotReady / backoff instead of generic failure.
+                if response.status == 429 or "cas_3404" in (text or ""):
+                    raise ElectroluxRateLimitError(
+                        f"{response.status}: {text or 'Rate limited by Electrolux'}"
+                    )
+
                 if response.status >= 400:
                     raise ElectroluxApiError(f"{response.status}: {text or 'Electrolux API request failed'}")
 
@@ -568,8 +577,12 @@ class ElectroluxApiClient:
                 "targetEnv": "mobile",
             }
         )
-        if not ids_data or "gmid" not in ids_data:
-            raise ElectroluxAuthError("Failed to get Gigya IDs")
+        if not ids_data:
+            raise ElectroluxAuthError(
+                "Gigya socialize.getIDs returned empty response (network/captcha?)"
+            )
+        if "gmid" not in ids_data:
+            raise ElectroluxAuthError(f"Gigya socialize.getIDs missing gmid: {ids_data}")
         gmid = ids_data["gmid"]
         ucid = ids_data["ucid"]
 
@@ -591,8 +604,14 @@ class ElectroluxApiClient:
                 "ucid": ucid,
             }
         )
-        if not login_data or "sessionInfo" not in login_data:
-            raise ElectroluxAuthError("Failed to login to Gigya")
+        if not login_data:
+            raise ElectroluxAuthError(
+                "Gigya accounts.login returned empty response (network/captcha?)"
+            )
+        if "sessionInfo" not in login_data:
+            # Common shape on bad credentials: {"errorCode": 403042, "errorMessage": "Invalid credentials"}
+            err_msg = login_data.get("errorMessage") or login_data.get("errorDetails") or str(login_data)
+            raise ElectroluxAuthError(f"Gigya login failed: {err_msg}")
         session_token = login_data["sessionInfo"]["sessionToken"]
         session_secret = login_data["sessionInfo"]["sessionSecret"]
 
@@ -619,8 +638,13 @@ class ElectroluxApiClient:
             base_url=f"https://accounts.{gigya_domain}",
             data=jwt_params
         )
-        if not jwt_data or "id_token" not in jwt_data:
-            raise ElectroluxAuthError("Failed to get JWT from Gigya")
+        if not jwt_data:
+            raise ElectroluxAuthError(
+                "Gigya accounts.getJWT returned empty response (network/captcha?)"
+            )
+        if "id_token" not in jwt_data:
+            err_msg = jwt_data.get("errorMessage") or jwt_data.get("errorDetails") or str(jwt_data)
+            raise ElectroluxAuthError(f"Gigya getJWT failed: {err_msg}")
         id_token = jwt_data["id_token"]
 
         # 6. One Account token exchange
@@ -793,7 +817,7 @@ class ElectroluxApiClient:
         appliance_ids: list[str],
         *,
         heartbeat: int = 300,
-    ):
+    ) -> Any:
         """Open an authenticated WebSocket connection.
 
         OCP's gateway is strict: the URL is the regional base URL **as-is**
@@ -861,10 +885,13 @@ class ElectroluxApiClient:
 
     async def async_get_capabilities(self, appliance_id: str) -> Mapping[str, Any] | list[Any] | None:
         """Return capabilities for an appliance."""
-        return await self._request(
+        result = await self._request(
             "GET",
             f"/appliance/api/v2/appliances/{appliance_id}/capabilities",
         )
+        if result is None or isinstance(result, (Mapping, list)):
+            return result
+        return None
 
     async def async_send_command(self, appliance_id: str, payload: Mapping[str, Any]) -> Any:
         """Send a raw capability command payload."""

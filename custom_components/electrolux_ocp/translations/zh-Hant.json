@@ -28,6 +28,29 @@
       "reauth_successful": "重新驗證成功"
     }
   },
+  "issues": {
+    "polling_failing": {
+      "title": "無法連線到 Electrolux",
+      "description": "Home Assistant 已連續 {failures} 次無法從 Electrolux 雲端取得資料更新。即時推播可能也已中斷。請檢查網路連線、Electrolux 服務狀態，以及整合的診斷感測器。若問題持續，請開啟整合頁面並嘗試「重新設定」進行重新驗證。"
+    }
+  },
+  "exceptions": {
+    "auth_token_missing": {
+      "message": "驗證權杖遺失，且未儲存密碼可重新登入。請重新設定整合。"
+    },
+    "invalid_auth": {
+      "message": "驗證失敗：{reason}"
+    },
+    "cannot_connect": {
+      "message": "無法連線到 Electrolux API：{reason}"
+    },
+    "rate_limited": {
+      "message": "Electrolux 目前正在限制請求頻率：{reason}"
+    },
+    "refresh_throttled": {
+      "message": "因本機冷卻時間，跳過權杖更新：{reason}"
+    }
+  },
   "entity": {
     "sensor": {
       "appliance_count": {
