@@ -8,8 +8,8 @@ composition without booting HA.
 
 from __future__ import annotations
 
-from custom_components.electrolux.const import DOMAIN
-from custom_components.electrolux.entity import ElectroluxBaseEntity
+from custom_components.electrolux_ocp.const import DOMAIN
+from custom_components.electrolux_ocp.entity import ElectroluxBaseEntity
 
 
 class _StubEntity(ElectroluxBaseEntity):

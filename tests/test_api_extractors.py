@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from custom_components.electrolux.api import (
+from custom_components.electrolux_ocp.api import (
     _attach_appliance_metadata,
     extract_appliance_id,
     extract_appliance_manufacturer,

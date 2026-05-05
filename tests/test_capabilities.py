@@ -8,7 +8,7 @@ import pytest
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.sensor import SensorDeviceClass
 
-from custom_components.electrolux.capabilities import (
+from custom_components.electrolux_ocp.capabilities import (
     PROPERTY_HINTS,
     PURE_A9_CAPABILITIES,
     ChainCapabilitiesProvider,
@@ -78,7 +78,7 @@ async def test_ocp_v2_provider_returns_dict_when_available():
 
 @pytest.mark.asyncio
 async def test_ocp_v2_provider_returns_none_on_404():
-    from custom_components.electrolux.api import ElectroluxApiError
+    from custom_components.electrolux_ocp.api import ElectroluxApiError
 
     client = MagicMock()
     client.async_get_capabilities = AsyncMock(side_effect=ElectroluxApiError("404: not found"))
@@ -96,7 +96,7 @@ async def test_ocp_v2_provider_returns_none_on_empty_response():
 
 @pytest.mark.asyncio
 async def test_chain_falls_through_to_static_when_ocp_404():
-    from custom_components.electrolux.api import ElectroluxApiError
+    from custom_components.electrolux_ocp.api import ElectroluxApiError
 
     client = MagicMock()
     client.async_get_capabilities = AsyncMock(side_effect=ElectroluxApiError("404"))
@@ -124,7 +124,7 @@ async def test_chain_prefers_ocp_response_when_available():
 
 @pytest.mark.asyncio
 async def test_chain_returns_none_when_no_provider_matches():
-    from custom_components.electrolux.api import ElectroluxApiError
+    from custom_components.electrolux_ocp.api import ElectroluxApiError
 
     client = MagicMock()
     client.async_get_capabilities = AsyncMock(side_effect=ElectroluxApiError("404"))

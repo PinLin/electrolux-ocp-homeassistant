@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from custom_components.electrolux.capabilities import (
+from custom_components.electrolux_ocp.capabilities import (
     auto_translation_key as _auto_translation_key,
 )
 

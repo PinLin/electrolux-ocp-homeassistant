@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from custom_components.electrolux.fan import (
+from custom_components.electrolux_ocp.fan import (
     DEFAULT_PRESET_MODES,
     DEFAULT_SPEED_RANGE,
     _derive_preset_modes,

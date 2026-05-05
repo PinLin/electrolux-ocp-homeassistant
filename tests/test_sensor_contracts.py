@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from custom_components.electrolux.capabilities import (
+from custom_components.electrolux_ocp.capabilities import (
     PROPERTY_HINTS,
     PURE_A9_CAPABILITIES,
     RESERVED_PROPERTIES,
@@ -19,7 +19,7 @@ from custom_components.electrolux.capabilities import (
 )
 
 
-COMPONENT_ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "electrolux"
+COMPONENT_ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "electrolux_ocp"
 
 
 def _load_translation(filename: str) -> dict:

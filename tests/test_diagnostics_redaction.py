@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from homeassistant.components.diagnostics import async_redact_data
 
-from custom_components.electrolux.const import REDACT_KEYS
+from custom_components.electrolux_ocp.const import REDACT_KEYS
 
 
 REDACTED = "**REDACTED**"
