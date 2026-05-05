@@ -1,0 +1,72 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as you can — most importantly, **attach a diagnostics dump**. Without it, root-causing cloud-API behaviour is usually impossible.
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: e.g. 2026.4.2
+    validations:
+      required: true
+
+  - type: input
+    id: integration_version
+    attributes:
+      label: Integration version
+      description: Find it under Settings → Devices & Services → Electrolux OCP → ⋮ → System info, or in `manifest.json`.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: appliance_model
+    attributes:
+      label: Appliance model
+      description: PNC and model name, e.g. `PUREA9 / 950011538`.
+      placeholder: e.g. Pure A9 / PUREA9
+    validations:
+      required: true
+
+  - type: input
+    id: country_code
+    attributes:
+      label: Country code
+      description: The country code you configured (TW, FI, SE, …). Helps identify region-specific OCP differences.
+      placeholder: e.g. TW
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what actually happened?
+      placeholder: |
+        I clicked the fan preset_mode dropdown to switch from Auto to Sleep.
+        Expected: appliance switches to Sleep.
+        Actual: HA shows it switched but the appliance didn't change; reverts to Auto on next refresh.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Set log level to debug for `custom_components.electrolux_ocp` and paste lines around the failure.
+      render: text
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics dump
+      description: |
+        **Required for any bug.** Settings → Devices & Services → Electrolux OCP → ⋮ → Download diagnostics. Or per-device: Settings → Devices & Services → Electrolux OCP → click device → ⋮ → Download diagnostics. Attach the JSON file by drag-and-dropping it into the issue.
+      placeholder: Drag the JSON file into the issue, or paste its contents here.
+    validations:
+      required: true

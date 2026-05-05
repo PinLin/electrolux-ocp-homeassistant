@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a new entity, appliance type, or behaviour.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: What problem does this solve?
+      description: What can't you do today that this feature would let you do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: How should the integration behave? Which entity types, services, or controls?
+    validations:
+      required: true
+
+  - type: input
+    id: appliance_model
+    attributes:
+      label: Appliance model (if applicable)
+      description: PNC + model name. For new appliance support, please attach a diagnostics dump so we can see the capability shape.
+      placeholder: e.g. EXP38U340HW (portable AC)
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics dump (if requesting new appliance support)
+      description: |
+        Settings → Devices & Services → Electrolux OCP → ⋮ → Download diagnostics. Without this, mapping a new appliance type is mostly guesswork.
+      placeholder: Drag the JSON file into the issue, or paste its contents here.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, links to vendor docs, or anything else you think helps.

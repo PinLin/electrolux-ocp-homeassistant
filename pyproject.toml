@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# pytest-homeassistant-custom-component's `hass` fixture is an async
+# generator and requires asyncio_mode=auto so pytest-asyncio resolves it
+# automatically. Existing @pytest.mark.asyncio markers stay valid (auto
+# mode treats explicit markers as no-ops, not duplicates).
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
