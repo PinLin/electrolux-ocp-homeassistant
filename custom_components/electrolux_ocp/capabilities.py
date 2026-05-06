@@ -155,30 +155,37 @@ PROPERTY_HINTS: dict[str, dict[str, Any]] = {
     "DoorOpen": {
         "translation_key": "filter_cover_open",
         "device_class": BinarySensorDeviceClass.PROBLEM,
+        "entity_category": EntityCategory.DIAGNOSTIC,
     },
     "ErrPM2_5": {
         "translation_key": "pm2_5_sensor_error",
         "device_class": BinarySensorDeviceClass.PROBLEM,
+        "entity_category": EntityCategory.DIAGNOSTIC,
     },
     "ErrTVOC": {
         "translation_key": "tvoc_sensor_error",
         "device_class": BinarySensorDeviceClass.PROBLEM,
+        "entity_category": EntityCategory.DIAGNOSTIC,
     },
     "ErrTempHumidity": {
         "translation_key": "temp_humidity_sensor_error",
         "device_class": BinarySensorDeviceClass.PROBLEM,
+        "entity_category": EntityCategory.DIAGNOSTIC,
     },
     "ErrFanMtr": {
         "translation_key": "fan_motor_error",
         "device_class": BinarySensorDeviceClass.PROBLEM,
+        "entity_category": EntityCategory.DIAGNOSTIC,
     },
     "ErrCommSensorDisplayBrd": {
         "translation_key": "communication_error",
         "device_class": BinarySensorDeviceClass.PROBLEM,
+        "entity_category": EntityCategory.DIAGNOSTIC,
     },
     "ErrRFID": {
         "translation_key": "filter_rfid_error",
         "device_class": BinarySensorDeviceClass.PROBLEM,
+        "entity_category": EntityCategory.DIAGNOSTIC,
     },
     # ---- writeable booleans (switch) ----
     "UILight": {"translation_key": "ui_light"},
@@ -246,8 +253,11 @@ def derive_ha_attrs(cap: Capability, key: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if key.startswith("Err") and cap.get("type") == "boolean":
         # OCP error/fault flags on every appliance line we've seen follow
-        # the ``Err<Name>`` convention. PROBLEM surfaces them in the HA UI.
+        # the ``Err<Name>`` convention. PROBLEM surfaces them in the HA UI;
+        # DIAGNOSTIC tucks them into the device's diagnostic section since
+        # they describe component health, not the device's primary purpose.
         out["device_class"] = BinarySensorDeviceClass.PROBLEM
+        out["entity_category"] = EntityCategory.DIAGNOSTIC
     return out
 
 
