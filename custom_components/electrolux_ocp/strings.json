@@ -62,14 +62,6 @@
       "token_expiry": {
         "name": "Token Expiry"
       },
-      "connection_state": {
-        "name": "Connection State",
-        "state": {
-          "online": "Online",
-          "offline": "Offline",
-          "unknown": "Unknown"
-        }
-      },
       "temperature": {
         "name": "Temperature"
       },
@@ -112,6 +104,9 @@
       }
     },
     "binary_sensor": {
+      "connection_state": {
+        "name": "Device Connection Status"
+      },
       "filter_cover_open": {
         "name": "Filter Cover Open"
       },

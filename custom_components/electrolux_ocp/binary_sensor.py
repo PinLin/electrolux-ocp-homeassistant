@@ -5,14 +5,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from typing import Any
 
-from .api import extract_appliance_id
+from .api import extract_appliance_id, extract_state_value
 from .capabilities import (
     PROPERTY_HINTS,
     auto_translation_key,
@@ -73,7 +77,9 @@ def _build_entities_for_appliance(
     appliance_id = extract_appliance_id(appliance)
     if not appliance_id:
         return []
-    entities: list[Entity] = []
+    entities: list[Entity] = [
+        ElectroluxConnectivityBinarySensor(coordinator, appliance_id),
+    ]
     capabilities = coordinator.get_capabilities(appliance_id) or {}
     reported = appliance.get("properties", {}).get("reported", {})
     for key, cap in capabilities.items():
@@ -89,6 +95,34 @@ def _build_entities_for_appliance(
             continue
         entities.append(ElectroluxBinarySensor(coordinator, appliance_id, key))
     return entities
+
+
+class ElectroluxConnectivityBinarySensor(ElectroluxBaseEntity, BinarySensorEntity):
+    """Cloud-reported reachability of an appliance."""
+
+    _attr_translation_key = "connection_state"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _state_attrs = ("is_on",)
+
+    def __init__(
+        self, coordinator: ElectroluxDataUpdateCoordinator, appliance_id: str
+    ) -> None:
+        super().__init__(coordinator, appliance_id)
+        self._attr_unique_id = f"{appliance_id}_connection_state"
+        self.entity_id = f"binary_sensor.{DOMAIN}_{appliance_id}_connection_state"
+
+    @property
+    def is_on(self) -> bool | None:
+        appliance = self._appliance
+        if not appliance:
+            return None
+        state = extract_state_value(appliance)
+        if state == "online":
+            return True
+        if state == "offline":
+            return False
+        return None
 
 
 class ElectroluxBinarySensor(ElectroluxBaseEntity, BinarySensorEntity):

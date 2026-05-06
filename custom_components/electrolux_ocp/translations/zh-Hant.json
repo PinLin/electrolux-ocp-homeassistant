@@ -62,14 +62,6 @@
       "token_expiry": {
         "name": "權杖到期時間"
       },
-      "connection_state": {
-        "name": "裝置連線狀態",
-        "state": {
-          "online": "線上",
-          "offline": "離線",
-          "unknown": "未知"
-        }
-      },
       "temperature": {
         "name": "溫度"
       },
@@ -112,6 +104,9 @@
       }
     },
     "binary_sensor": {
+      "connection_state": {
+        "name": "裝置連線狀態"
+      },
       "filter_cover_open": {
         "name": "濾網蓋開啟"
       },

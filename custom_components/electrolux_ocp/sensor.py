@@ -19,7 +19,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import (
     extract_appliance_id,
-    extract_state_value,
     summarize_appliance,
 )
 from .capabilities import (
@@ -67,11 +66,7 @@ def _build_entities_for_appliance(
     if not appliance_id:
         return []
 
-    entities: list[Entity] = [
-        # Always present, not capability-driven — surfaces the cloud's view
-        # of reachability separately from any reported state.
-        ElectroluxApplianceStateSensor(coordinator, appliance_id),
-    ]
+    entities: list[Entity] = []
 
     capabilities = coordinator.get_capabilities(appliance_id) or {}
     reported = appliance.get("properties", {}).get("reported", {})
@@ -186,28 +181,6 @@ class ElectroluxLastUpdateSensor(
     @property
     def native_value(self) -> datetime | None:
         return self.coordinator.last_success_at
-
-
-class ElectroluxApplianceStateSensor(ElectroluxBaseEntity, SensorEntity):
-    """Connection state diagnostic sensor for an appliance."""
-
-    _attr_translation_key = "connection_state"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _state_attrs = ("native_value",)
-
-    def __init__(
-        self, coordinator: ElectroluxDataUpdateCoordinator, appliance_id: str
-    ) -> None:
-        super().__init__(coordinator, appliance_id)
-        self._attr_unique_id = f"{appliance_id}_connection_state"
-        self.entity_id = f"sensor.{DOMAIN}_{appliance_id}_connection_state"
-
-    @property
-    def native_value(self) -> str | None:
-        appliance = self._appliance
-        if not appliance:
-            return None
-        return extract_state_value(appliance)
 
 
 class ElectroluxDynamicPropertySensor(ElectroluxBaseEntity, SensorEntity):

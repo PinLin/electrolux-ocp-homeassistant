@@ -10,9 +10,6 @@
       "last_update": {
         "default": "mdi:clock-check-outline"
       },
-      "connection_state": {
-        "default": "mdi:information-outline"
-      },
       "filter_life": {
         "default": "mdi:filter-outline"
       },
