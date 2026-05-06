@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
 from typing import Any
 
 from aiohttp import WSMsgType, WSServerHandshakeError
@@ -13,8 +12,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers.update_coordinator import (
+    TimestampDataUpdateCoordinator,
+    UpdateFailed,
+)
 
 from .api import (
     ElectroluxApiClient,
@@ -56,7 +57,7 @@ ISSUE_POLLING_FAILING = "polling_failing"
 LOGGER = logging.getLogger(__name__)
 
 
-class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
+class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxData]):
     """Coordinate Electrolux API fetches and WebSocket updates."""
 
     config_entry: ElectroluxConfigEntry
@@ -90,9 +91,6 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
         # An empty dict in the cache means "no provider claimed this appliance"
         # and is the signal for entity layers to use their built-in fallbacks.
         self._capabilities_cache: dict[str, CapabilityDict] = {}
-        # Manually-tracked timestamp of the last successful refresh.
-        # DataUpdateCoordinator only exposes a bool last_update_success.
-        self.last_success_at: datetime | None = None
         # Appliance IDs we've already dispatched a NEW_APPLIANCE_SIGNAL for.
         # Seeded after the first successful refresh so the initial fleet
         # doesn't double-fire (platforms will pick those up directly from
@@ -273,8 +271,6 @@ class ElectroluxDataUpdateCoordinator(DataUpdateCoordinator[ElectroluxData]):
         # started once at setup time and self-heals via its own reconnect
         # loop. Polling here only refreshes REST state, token health, and
         # the appliance list.
-
-        self.last_success_at = dt_util.utcnow()
 
         return ElectroluxData(
             appliances=list(appliances),

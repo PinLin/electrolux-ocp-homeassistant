@@ -95,7 +95,7 @@ async def test_setup_attaches_runtime_data(hass: HomeAssistant) -> None:
     assert coordinator is not None
     # Capability fetch was attempted but returned None — cache stays empty
     # for unsupported appliances.
-    assert coordinator.last_success_at is not None
+    assert coordinator.last_update_success_time is not None
 
     # Cleanly tear down
     assert await hass.config_entries.async_unload(entry.entry_id)

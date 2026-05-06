@@ -180,7 +180,7 @@ class ElectroluxLastUpdateSensor(
 
     @property
     def native_value(self) -> datetime | None:
-        return self.coordinator.last_success_at
+        return self.coordinator.last_update_success_time
 
 
 class ElectroluxDynamicPropertySensor(ElectroluxBaseEntity, SensorEntity):
