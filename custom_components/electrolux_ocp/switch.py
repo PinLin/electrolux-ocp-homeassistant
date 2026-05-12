@@ -102,7 +102,21 @@ class ElectroluxSwitch(ElectroluxBaseEntity, SwitchEntity):
         await self._send_command(False)
 
     async def _send_command(self, value: bool) -> None:
-        """Send a command to the appliance."""
-        client = self.coordinator.client
-        await client.async_send_command(self._appliance_id, {self._property_key: value})
-        await self.coordinator.async_request_refresh()
+        """Send a command to the appliance.
+
+        Optimistic flow: paint the desired value into coordinator data
+        *before* the PUT so the UI updates instantly. The previous design
+        called ``async_request_refresh()`` immediately after PUT, which
+        races against the cloud's eventually-consistent reported state and
+        produced the "I toggled it on but it flips back to off" symptom.
+        WS push delivers the real device-confirmed value; if the command
+        fails outright we drop the optimistic state and re-poll.
+        """
+        payload = {self._property_key: value}
+        self.coordinator.apply_optimistic_update(self._appliance_id, payload)
+        try:
+            await self.coordinator.client.async_send_command(self._appliance_id, payload)
+        except Exception:
+            self.coordinator.clear_optimistic_update(self._appliance_id, payload.keys())
+            await self.coordinator.async_request_refresh()
+            raise

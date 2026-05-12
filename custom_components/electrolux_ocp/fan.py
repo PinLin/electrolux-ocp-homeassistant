@@ -205,6 +205,14 @@ class ElectroluxAirPurifier(ElectroluxBaseEntity, FanEntity):
         await self._send_commands({"Workmode": workmode})
 
     async def _send_commands(self, payload: dict[str, Any]) -> None:
-        client = self.coordinator.client
-        await client.async_send_command(self._appliance_id, payload)
-        await self.coordinator.async_request_refresh()
+        # See switch._send_command for why we paint the value locally first
+        # instead of refreshing immediately after PUT.
+        if not payload:
+            return
+        self.coordinator.apply_optimistic_update(self._appliance_id, payload)
+        try:
+            await self.coordinator.client.async_send_command(self._appliance_id, payload)
+        except Exception:
+            self.coordinator.clear_optimistic_update(self._appliance_id, payload.keys())
+            await self.coordinator.async_request_refresh()
+            raise

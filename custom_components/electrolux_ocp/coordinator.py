@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from aiohttp import WSMsgType, WSServerHandshakeError
@@ -53,6 +54,11 @@ WS_TOKEN_FRESH_SECONDS = 1500  # 25 min
 # enough that an actually broken integration doesn't go unnoticed.
 POLLING_FAILURE_THRESHOLD = 3
 ISSUE_POLLING_FAILING = "polling_failing"
+# How long an unconfirmed optimistic write keeps overriding REST/WS state.
+# OCP's command pipeline (PUT → device → reported → WS push) usually settles
+# in 1–3 s; a generous window absorbs cloud lag without leaving the UI lying
+# about the device's real state for too long if the device ultimately rejects.
+OPTIMISTIC_TTL_SECONDS = 10.0
 
 LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +105,14 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         # Consecutive polling failures, used to gate the polling_failing
         # repair issue. Reset on every successful refresh.
         self._consecutive_failures: int = 0
+        # Pending optimistic writes:
+        # {appliance_id: {property_key: (desired, original, expires_at_monotonic)}}.
+        # We paint the desired value locally before the API call so the UI
+        # updates instantly, and remember the pre-paint ``original`` so a
+        # failed PUT can revert cleanly. Subsequent stale REST polls / WS
+        # pushes are overlaid until the cloud catches up (entry cleared on
+        # match) or the TTL expires (entry dropped, reality wins).
+        self._optimistic_pending: dict[str, dict[str, tuple[Any, Any, float]]] = {}
         # Atomic persistence: every time the client applies a new token
         # response we immediately write it to the entry. Removes the class of
         # bugs where a refreshed token was lost in memory and the next call
@@ -154,6 +168,147 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
             self._appliance_index_cache = (self.data, index)
             return index.get(appliance_id)
         result: dict[str, Any] | None = cache[1].get(appliance_id)
+        return result
+
+    def apply_optimistic_update(
+        self, appliance_id: str, payload: Mapping[str, Any]
+    ) -> None:
+        """Apply the user's desired write locally and broadcast it.
+
+        Solves the "I turned it on but it flickered back off" symptom:
+        OCP's command pipeline is eventually consistent, so a REST refresh
+        issued immediately after PUT /command races against the device
+        reporting back and the UI shows the cloud's stale value before WS
+        delivers the new one. By overlaying the desired value on top of
+        coordinator data and remembering it as pending, the entity stays
+        on the user's chosen state until either WS/REST confirms or
+        ``OPTIMISTIC_TTL_SECONDS`` elapses.
+
+        The pre-paint reported value is captured per key so a failed PUT
+        can be cleanly reverted via :meth:`clear_optimistic_update`.
+        """
+        if not self.data or not payload:
+            return
+        expires_at = time.monotonic() + OPTIMISTIC_TTL_SECONDS
+        pending = self._optimistic_pending.setdefault(appliance_id, {})
+        current_appliance = self.get_appliance(appliance_id) or {}
+        current_reported = (
+            (current_appliance.get("properties") or {}).get("reported") or {}
+        )
+        for key, value in payload.items():
+            existing = pending.get(key)
+            # Preserve the very first original we ever captured for this key,
+            # not whatever the overlay just painted on top of it.
+            original = existing[1] if existing is not None else current_reported.get(key)
+            pending[key] = (value, original, expires_at)
+        merged = self._merge_pending_into_appliances(self.data.appliances)
+        self.async_set_updated_data(
+            ElectroluxData(
+                appliances=merged,
+                user=self.data.user,
+                capabilities=self.data.capabilities,
+            )
+        )
+
+    def clear_optimistic_update(
+        self, appliance_id: str, keys: Iterable[str]
+    ) -> None:
+        """Drop pending optimistic writes and revert to the captured originals.
+
+        Called on command failure: removes the pending entry *and* patches
+        the original value back into coordinator data so the UI doesn't
+        keep showing the desired (but un-applied) value while waiting for
+        a follow-up refresh to come back.
+        """
+        pending = self._optimistic_pending.get(appliance_id)
+        if not pending:
+            return
+        originals: dict[str, Any] = {}
+        for key in keys:
+            entry = pending.pop(key, None)
+            if entry is None:
+                continue
+            originals[key] = entry[1]
+        if not pending:
+            self._optimistic_pending.pop(appliance_id, None)
+        if not originals or self.data is None:
+            return
+        reverted: list[dict[str, Any]] = []
+        for appliance in self.data.appliances:
+            if extract_appliance_id(appliance) != appliance_id:
+                reverted.append(appliance)
+                continue
+            props = dict(appliance.get("properties") or {})
+            reported = dict(props.get("reported") or {})
+            for key, original in originals.items():
+                if original is None:
+                    reported.pop(key, None)
+                else:
+                    reported[key] = original
+            props["reported"] = reported
+            reverted.append({**appliance, "properties": props})
+        merged = self._merge_pending_into_appliances(reverted)
+        self.async_set_updated_data(
+            ElectroluxData(
+                appliances=merged,
+                user=self.data.user,
+                capabilities=self.data.capabilities,
+            )
+        )
+
+    def _merge_pending_into_appliances(
+        self, appliances: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Overlay still-pending optimistic writes on top of fresh data.
+
+        Called every time we're about to publish new coordinator data, so
+        that REST/WS snapshots which haven't caught up yet don't flicker
+        the UI back to the pre-command state. Three transitions per key:
+
+        * ``reported`` already equals the pending value → confirmed; drop
+          the pending entry (and let WS-equality dedup suppress the
+          broadcast on the next identical push).
+        * still pending and within TTL → overlay the pending value on
+          top of ``reported``.
+        * past TTL → unconditionally drop the pending entry and trust
+          whatever the cloud says, even if it disagrees with the user's
+          last action. Keeps the UI honest when the device silently
+          rejects a command.
+        """
+        now = time.monotonic()
+        if not self._optimistic_pending:
+            return appliances
+        result: list[dict[str, Any]] = []
+        for appliance in appliances:
+            aid = extract_appliance_id(appliance)
+            pending = self._optimistic_pending.get(aid) if aid else None
+            if not pending:
+                result.append(appliance)
+                continue
+            reported = dict(
+                (appliance.get("properties") or {}).get("reported") or {}
+            )
+            overlay_changed = False
+            keys_to_drop: list[str] = []
+            for key, (value, _original, expires_at) in pending.items():
+                if now >= expires_at:
+                    keys_to_drop.append(key)
+                    continue
+                if reported.get(key) == value:
+                    keys_to_drop.append(key)
+                    continue
+                reported[key] = value
+                overlay_changed = True
+            for k in keys_to_drop:
+                pending.pop(k, None)
+            if not pending and aid is not None:
+                self._optimistic_pending.pop(aid, None)
+            if overlay_changed:
+                props = dict(appliance.get("properties") or {})
+                props["reported"] = reported
+                result.append({**appliance, "properties": props})
+            else:
+                result.append(appliance)
         return result
 
     def _persist_tokens_now(self) -> None:
@@ -273,7 +428,7 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         # the appliance list.
 
         return ElectroluxData(
-            appliances=list(appliances),
+            appliances=self._merge_pending_into_appliances(list(appliances)),
             user=dict(user) if isinstance(user, dict) else None,
             capabilities=dict(self._capabilities_cache),
         )
@@ -471,7 +626,7 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         if changed:
             self.async_set_updated_data(
                 ElectroluxData(
-                    appliances=merged,
+                    appliances=self._merge_pending_into_appliances(merged),
                     user=self.data.user,
                     capabilities=self.data.capabilities,
                 )

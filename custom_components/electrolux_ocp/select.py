@@ -126,6 +126,13 @@ class ElectroluxSelect(ElectroluxBaseEntity, SelectEntity):
         return option
 
     async def async_select_option(self, option: str) -> None:
-        client = self.coordinator.client
-        await client.async_send_command(self._appliance_id, {self._property_key: option})
-        await self.coordinator.async_request_refresh()
+        # See switch._send_command for why we paint the value locally first
+        # instead of refreshing immediately after PUT.
+        payload = {self._property_key: option}
+        self.coordinator.apply_optimistic_update(self._appliance_id, payload)
+        try:
+            await self.coordinator.client.async_send_command(self._appliance_id, payload)
+        except Exception:
+            self.coordinator.clear_optimistic_update(self._appliance_id, payload.keys())
+            await self.coordinator.async_request_refresh()
+            raise
