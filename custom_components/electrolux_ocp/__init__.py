@@ -6,17 +6,11 @@ import logging
 
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .api import (
-    ElectroluxApiClient,
-    ElectroluxApiError,
-    ElectroluxAuthError,
-    ElectroluxRateLimitError,
-    extract_appliance_id,
-)
+from .api import ElectroluxApiClient, extract_appliance_id
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_API_BASE_URL,
@@ -55,57 +49,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ElectroluxConfigEntry) -
         ws_base_url=entry.data.get(CONF_WS_BASE_URL),
     )
 
-    # Simple strategy: if we don't have a token, log in.
+    # Simple strategy: if we don't have a token, we can't proceed. The config
+    # flow always discards the password after a successful login/reauth (it
+    # persists rotated tokens instead), so there is never a password on the
+    # entry to fall back to here — the only path forward is reconfiguring.
     if not client.access_token:
-        if not entry.data.get(CONF_PASSWORD):
-            raise ConfigEntryAuthFailed(
-                translation_domain=DOMAIN,
-                translation_key="auth_token_missing",
-            )
-
-        try:
-            await client.async_login()
-        except ElectroluxAuthError as err:
-            raise ConfigEntryAuthFailed(
-                translation_domain=DOMAIN,
-                translation_key="invalid_auth",
-                translation_placeholders={"reason": str(err)},
-            ) from err
-        except ElectroluxRateLimitError as err:
-            # Don't trigger reauth — HA will retry with exponential backoff.
-            raise ConfigEntryNotReady(
-                translation_domain=DOMAIN,
-                translation_key="rate_limited",
-                translation_placeholders={"reason": str(err)},
-            ) from err
-        except ElectroluxApiError as err:
-            raise ConfigEntryNotReady(
-                translation_domain=DOMAIN,
-                translation_key="cannot_connect",
-                translation_placeholders={"reason": str(err)},
-            ) from err
+        raise ConfigEntryAuthFailed(
+            translation_domain=DOMAIN,
+            translation_key="auth_token_missing",
+        )
 
     coordinator = ElectroluxDataUpdateCoordinator(hass, client=client, entry=entry)
 
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except ElectroluxAuthError:
-        try:
-            # Token might be expired, try to login again
-            await client.async_login()
-            await coordinator.async_config_entry_first_refresh()
-        except ElectroluxAuthError as inner_err:
-            raise ConfigEntryAuthFailed(
-                translation_domain=DOMAIN,
-                translation_key="invalid_auth",
-                translation_placeholders={"reason": str(inner_err)},
-            ) from inner_err
-    except ElectroluxApiError as err:
-        raise ConfigEntryNotReady(
-            translation_domain=DOMAIN,
-            translation_key="cannot_connect",
-            translation_placeholders={"reason": str(err)},
-        ) from err
+    # The coordinator already translates ElectroluxAuthError into
+    # ConfigEntryAuthFailed and other ElectroluxApiError into UpdateFailed
+    # (which async_config_entry_first_refresh turns into ConfigEntryNotReady)
+    # before this call returns, so those two HA exceptions are the only
+    # failure modes here — let them propagate to trigger reauth / HA's
+    # built-in retry-with-backoff respectively.
+    await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = ElectroluxRuntimeData(client=client, coordinator=coordinator)
     # Cleanly cancel the WebSocket task when the entry is unloaded/reloaded.

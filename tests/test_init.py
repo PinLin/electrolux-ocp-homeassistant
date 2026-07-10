@@ -12,8 +12,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -121,6 +123,60 @@ async def test_unload_stops_ws_task(hass: HomeAssistant) -> None:
     # Either fully done or cancelled — both acceptable post-unload.
     ws_task = coordinator._ws_task
     assert ws_task is None or ws_task.done()
+
+
+async def test_setup_first_refresh_auth_failed_propagates(hass: HomeAssistant) -> None:
+    """ConfigEntryAuthFailed from first refresh must propagate as-is.
+
+    It must not be swallowed by a stale "retry login" fallback: the
+    coordinator already translates auth failures into ConfigEntryAuthFailed,
+    so __init__ has nothing useful to do except let it through and trigger
+    reauth.
+    """
+    entry = _entry(hass)
+    fake_client = _make_client()
+
+    with (
+        patch(
+            "custom_components.electrolux_ocp.ElectroluxApiClient",
+            return_value=fake_client,
+        ),
+        patch(
+            "custom_components.electrolux_ocp.ElectroluxDataUpdateCoordinator"
+            ".async_config_entry_first_refresh",
+            AsyncMock(side_effect=ConfigEntryAuthFailed("boom")),
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+
+
+async def test_setup_first_refresh_not_ready_propagates(hass: HomeAssistant) -> None:
+    """ConfigEntryNotReady from first refresh must propagate as-is.
+
+    HA schedules its own exponential-backoff retry for this state; __init__
+    must not intercept it with dead retry logic.
+    """
+    entry = _entry(hass)
+    fake_client = _make_client()
+
+    with (
+        patch(
+            "custom_components.electrolux_ocp.ElectroluxApiClient",
+            return_value=fake_client,
+        ),
+        patch(
+            "custom_components.electrolux_ocp.ElectroluxDataUpdateCoordinator"
+            ".async_config_entry_first_refresh",
+            AsyncMock(side_effect=ConfigEntryNotReady("not ready yet")),
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
 async def test_stale_device_removed_on_refresh(hass: HomeAssistant) -> None:
