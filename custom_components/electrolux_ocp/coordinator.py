@@ -611,6 +611,11 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
                     raise
                 except WSServerHandshakeError as err:
                     backoff = await self._handle_ws_handshake_error(err, refreshed_this_cycle)
+                    if not self._ws_active:
+                        # Handler declared the WS dead (reauth pending). Exit
+                        # now — sleeping first would keep the task alive and
+                        # block the poll-driven restart, which needs task.done().
+                        break
                     if backoff == 0:
                         refreshed_this_cycle = True
                         continue
@@ -637,6 +642,8 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
 
         Returns the number of seconds to back off before reconnecting, or 0
         if the caller should reconnect immediately (token was just refreshed).
+        May instead set ``_ws_active = False`` (refresh rejected → reauth
+        pending); the caller must check it before honouring the backoff.
         """
         if err.status not in (401, 403):
             backoff = self._ws_backoff_seconds()
@@ -691,14 +698,12 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
             )
             return backoff
         except ElectroluxAuthError as refresh_err:
-            backoff = self._ws_backoff_seconds()
-            self._ws_consecutive_failures += 1
             LOGGER.error(
                 "WebSocket token refresh failed; stopping WS until reauth: %s",
                 refresh_err,
             )
             self._ws_active = False
-            return backoff
+            return 0.0
         return 0  # immediate reconnect with the freshly refreshed token
 
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:

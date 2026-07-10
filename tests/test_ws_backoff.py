@@ -18,7 +18,10 @@ from homeassistant.core import HomeAssistant
 from aiohttp import WSServerHandshakeError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.electrolux_ocp.api import ElectroluxRateLimitError
+from custom_components.electrolux_ocp.api import (
+    ElectroluxAuthError,
+    ElectroluxRateLimitError,
+)
 from custom_components.electrolux_ocp.const import (
     CONF_API_KEY,
     CONF_COUNTRY_CODE,
@@ -191,6 +194,45 @@ async def test_handshake_error_non_auth_status_uses_formula_and_increments(
         backoff = await coord._handle_ws_handshake_error(err, False)
     assert backoff == pytest.approx(30 * 0.5)
     assert coord._ws_consecutive_failures == 1
+
+
+async def test_ws_auth_death_exits_loop_without_sleeping(
+    hass: HomeAssistant,
+) -> None:
+    # When the handshake handler declares the WS dead (refresh rejected →
+    # reauth pending), the loop must exit immediately. Sleeping a backoff
+    # first would leave the task alive for up to 300 s, blocking the
+    # poll-driven restart which requires task.done().
+    coord = _make_coordinator(hass)
+    coord.data = ElectroluxData(
+        appliances=[{"applianceId": "A1"}], user=None, capabilities={}
+    )
+    coord._ws_active = True
+    coord._client.access_token_expires_at = None
+    coord._client.async_refresh_token = AsyncMock(
+        side_effect=ElectroluxAuthError("invalid_grant")
+    )
+    coord._client.ws_connect = MagicMock(
+        side_effect=WSServerHandshakeError(MagicMock(), (), status=401, message="denied")
+    )
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    with patch(
+        "custom_components.electrolux_ocp.coordinator.asyncio.sleep",
+        new=AsyncMock(side_effect=fake_sleep),
+    ), patch(
+        "custom_components.electrolux_ocp.coordinator.random.uniform",
+        return_value=1.0,
+    ):
+        await coord._async_websocket_loop()
+
+    assert sleeps == []
+    assert coord._ws_active is False
+    coord._client.ws_connect.assert_called_once()
 
 
 async def test_handshake_error_rate_limited_branch_uses_floor_and_increments(
