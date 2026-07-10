@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -397,6 +398,11 @@ class ElectroluxApiClient:
         self._last_refresh_at: float | None = None
         self._last_refresh_status: str | None = None
         self._on_token_update: Callable[[], None] | None = None
+        # Serialises token refreshes. Without it a REST poll and a WS handshake
+        # recovery can both pass the cooldown check and fire two HTTP refreshes
+        # with the same (possibly single-use) refresh token; the loser gets
+        # invalid_grant → 401 → a spurious reauth.
+        self._refresh_lock = asyncio.Lock()
 
 
     @property
@@ -486,16 +492,19 @@ class ElectroluxApiClient:
             ) as response:
                 text = await response.text()
 
-                if response.status in (401, 403):
-                    raise ElectroluxAuthError(f"{response.status}: {text or 'Authentication failed'}")
-
                 # Map 429 (and OCP's cas_3404) uniformly to RateLimitError so
                 # callers (config_flow setup, coordinator, WS loop) can map to
                 # ConfigEntryNotReady / backoff instead of generic failure.
+                # Checked before 401/403: OCP can wrap cas_3404 in an auth
+                # status, and treating a throttle as credential failure would
+                # escalate it into a spurious reauth prompt.
                 if response.status == 429 or "cas_3404" in (text or ""):
                     raise ElectroluxRateLimitError(
                         f"{response.status}: {text or 'Rate limited by Electrolux'}"
                     )
+
+                if response.status in (401, 403):
+                    raise ElectroluxAuthError(f"{response.status}: {text or 'Authentication failed'}")
 
                 if response.status >= 400:
                     raise ElectroluxApiError(f"{response.status}: {text or 'Electrolux API request failed'}")
@@ -679,42 +688,61 @@ class ElectroluxApiClient:
         if not self._refresh_token:
             raise ElectroluxAuthError("No refresh token available")
 
-        if self._last_refresh_at is not None:
-            elapsed = time.time() - self._last_refresh_at
-            if elapsed < MIN_REFRESH_INTERVAL_SECONDS:
-                self._last_refresh_status = "throttled"
-                raise ElectroluxRefreshThrottled(
-                    f"Refresh skipped: last refresh was {elapsed:.0f}s ago "
-                    f"(cooldown {MIN_REFRESH_INTERVAL_SECONDS}s)"
+        # Snapshot before contending for the lock so we can tell a concurrent
+        # refresh (which completed while we waited) apart from a genuinely
+        # too-frequent sequential call.
+        refresh_at_on_entry = self._last_refresh_at
+
+        async with self._refresh_lock:
+            # Double-check under the lock: if another caller refreshed while we
+            # were queued, adopt its result instead of firing a second HTTP
+            # request with a refresh token that may already be rotated.
+            if (
+                self._last_refresh_at is not None
+                and self._last_refresh_at != refresh_at_on_entry
+                and self._last_refresh_status == "ok"
+            ):
+                return
+
+            if self._last_refresh_at is not None:
+                elapsed = time.time() - self._last_refresh_at
+                if elapsed < MIN_REFRESH_INTERVAL_SECONDS:
+                    self._last_refresh_status = "throttled"
+                    raise ElectroluxRefreshThrottled(
+                        f"Refresh skipped: last refresh was {elapsed:.0f}s ago "
+                        f"(cooldown {MIN_REFRESH_INTERVAL_SECONDS}s)"
+                    )
+
+            try:
+                token_data = await self._request(
+                    "POST",
+                    "/one-account-authorization/api/v1/token",
+                    base_url=self._api_base_url,
+                    json_body={
+                        "grantType": "refresh_token",
+                        "clientId": self._client_id,
+                        "clientSecret": self._client_secret,
+                        "refreshToken": self._refresh_token,
+                        "scope": "",
+                    },
+                    headers={"x-api-key": self._api_key},
                 )
+            except ElectroluxApiError as err:
+                text = str(err)
+                if text.startswith("429") or "cas_3404" in text:
+                    self._last_refresh_status = "rate_limited"
+                    raise ElectroluxRateLimitError(text) from err
+                if "invalid_grant" in text:
+                    self._last_refresh_status = "error: invalid_grant"
+                    raise ElectroluxAuthError(text) from err
+                self._last_refresh_status = f"error: {text[:120]}"
+                raise
 
-        try:
-            token_data = await self._request(
-                "POST",
-                "/one-account-authorization/api/v1/token",
-                base_url=self._api_base_url,
-                json_body={
-                    "grantType": "refresh_token",
-                    "clientId": self._client_id,
-                    "clientSecret": self._client_secret,
-                    "refreshToken": self._refresh_token,
-                    "scope": "",
-                },
-                headers={"x-api-key": self._api_key},
-            )
-        except ElectroluxApiError as err:
-            text = str(err)
-            if text.startswith("429") or "cas_3404" in text:
-                self._last_refresh_status = "rate_limited"
-                raise ElectroluxRateLimitError(text) from err
-            self._last_refresh_status = f"error: {text[:120]}"
-            raise
+            if not token_data or "accessToken" not in token_data:
+                self._last_refresh_status = "error: malformed response"
+                raise ElectroluxAuthError("Failed to refresh token")
 
-        if not token_data or "accessToken" not in token_data:
-            self._last_refresh_status = "error: malformed response"
-            raise ElectroluxAuthError("Failed to refresh token")
-
-        self._apply_token_response(token_data)
+            self._apply_token_response(token_data)
 
     def _apply_token_response(self, token_data: Mapping[str, Any]) -> None:
         """Store access/refresh tokens and compute expiry from the response."""
