@@ -160,6 +160,38 @@ async def test_user_flow_cannot_connect(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.asyncio
+async def test_user_flow_rate_limited(hass: HomeAssistant) -> None:
+    """ElectroluxRateLimitError must surface as rate_limited, not cannot_connect.
+
+    Showing a generic "Failed to connect" for a 429 misleads the user into
+    retrying immediately, which only makes the OCP throttling worse.
+    """
+    from custom_components.electrolux_ocp.api import ElectroluxRateLimitError
+
+    failing = _make_client(
+        login=AsyncMock(side_effect=ElectroluxRateLimitError("too many requests"))
+    )
+    with patch(
+        "custom_components.electrolux_ocp.config_flow.ElectroluxApiClient",
+        return_value=failing,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "username": "user@example.com",
+                "password": "x",
+                CONF_COUNTRY_CODE: "TW",
+            },
+        )
+
+    assert result2["type"] is FlowResultType.FORM
+    assert result2["errors"] == {"base": "rate_limited"}
+
+
+@pytest.mark.asyncio
 async def test_user_flow_aborts_when_account_already_configured(
     hass: HomeAssistant, fake_client: AsyncMock
 ) -> None:
@@ -229,3 +261,95 @@ async def test_reauth_updates_tokens(hass: HomeAssistant, fake_client: AsyncMock
     assert result2["reason"] == "reauth_successful"
     assert entry.data["access_token"] == "access-token-1"
     assert entry.data["refresh_token"] == "refresh-token-1"
+
+
+@pytest.mark.asyncio
+async def test_reauth_invalid_auth_does_not_create_second_entry(
+    hass: HomeAssistant,
+) -> None:
+    """Wrong password during reauth → invalid_auth, and no duplicate entry.
+
+    Reauth must update the existing entry in place; it must never fall
+    through to creating a brand-new config entry for the same account.
+    """
+    from custom_components.electrolux_ocp.api import ElectroluxAuthError
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="user@example.com",
+        data={
+            "username": "user@example.com",
+            CONF_COUNTRY_CODE: "TW",
+            "access_token": "old",
+            "refresh_token": "old",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    failing = _make_client(login=AsyncMock(side_effect=ElectroluxAuthError("nope")))
+    with patch(
+        "custom_components.electrolux_ocp.config_flow.ElectroluxApiClient",
+        return_value=failing,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+                "unique_id": entry.unique_id,
+            },
+            data=entry.data,
+        )
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"password": "wrong"}
+        )
+
+    assert result2["type"] is FlowResultType.FORM
+    assert result2["errors"] == {"base": "invalid_auth"}
+    # The original entry's tokens must be untouched, and no second entry
+    # for the same account must have been created.
+    assert entry.data["access_token"] == "old"
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert len(entries) == 1
+    assert entries[0].entry_id == entry.entry_id
+
+
+@pytest.mark.asyncio
+async def test_reauth_rate_limited(hass: HomeAssistant) -> None:
+    """ElectroluxRateLimitError during reauth must surface as rate_limited."""
+    from custom_components.electrolux_ocp.api import ElectroluxRateLimitError
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="user@example.com",
+        data={
+            "username": "user@example.com",
+            CONF_COUNTRY_CODE: "TW",
+            "access_token": "old",
+            "refresh_token": "old",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    failing = _make_client(
+        login=AsyncMock(side_effect=ElectroluxRateLimitError("too many requests"))
+    )
+    with patch(
+        "custom_components.electrolux_ocp.config_flow.ElectroluxApiClient",
+        return_value=failing,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+                "unique_id": entry.unique_id,
+            },
+            data=entry.data,
+        )
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"password": "whatever"}
+        )
+
+    assert result2["type"] is FlowResultType.FORM
+    assert result2["errors"] == {"base": "rate_limited"}

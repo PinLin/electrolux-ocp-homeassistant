@@ -21,6 +21,7 @@
     "error": {
       "cannot_connect": "Failed to connect to the Electrolux API.",
       "invalid_auth": "Invalid email or password.",
+      "rate_limited": "Electrolux is temporarily rate-limiting requests. Please wait a while before trying again.",
       "unknown": "Unexpected error."
     },
     "abort": {
@@ -31,12 +32,12 @@
   "issues": {
     "polling_failing": {
       "title": "Cannot reach Electrolux",
-      "description": "Home Assistant has not been able to refresh data from the Electrolux cloud for the last {failures} polling cycles. Real-time updates may also be stalled. Check your network connection, the Electrolux service status, and the integration's diagnostic sensors. If the problem persists, open the integration and try **Reconfigure** to re-authenticate."
+      "description": "Home Assistant has not been able to refresh data from the Electrolux cloud for the last {failures} polling cycles. Real-time updates may also be stalled. Check your network connection, the Electrolux service status, and the integration's diagnostic sensors. If the problem persists, verify your network connectivity; if a re-authentication prompt appears for this integration, complete it to restore access."
     }
   },
   "exceptions": {
     "auth_token_missing": {
-      "message": "Authentication token missing and no password stored to log in. Reconfigure the integration."
+      "message": "Authentication token missing. Please re-authenticate to restore access."
     },
     "invalid_auth": {
       "message": "Authentication failed: {reason}"

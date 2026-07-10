@@ -11,7 +11,12 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import ElectroluxApiClient, ElectroluxApiError, ElectroluxAuthError
+from .api import (
+    ElectroluxApiClient,
+    ElectroluxApiError,
+    ElectroluxAuthError,
+    ElectroluxRateLimitError,
+)
 from .const import (
     CONF_USERNAME,
     CONF_PASSWORD,
@@ -94,6 +99,8 @@ class ElectroluxConfigFlow(ConfigFlow, domain=DOMAIN):
                 info = await async_validate_input(self.hass, user_input)
             except ElectroluxAuthError:
                 errors["base"] = "invalid_auth"
+            except ElectroluxRateLimitError:
+                errors["base"] = "rate_limited"
             except ElectroluxApiError:
                 errors["base"] = "cannot_connect"
             except Exception:  # pylint: disable=broad-except
@@ -140,6 +147,8 @@ class ElectroluxConfigFlow(ConfigFlow, domain=DOMAIN):
                 info = await async_validate_input(self.hass, auth_data)
             except ElectroluxAuthError:
                 errors["base"] = "invalid_auth"
+            except ElectroluxRateLimitError:
+                errors["base"] = "rate_limited"
             except ElectroluxApiError:
                 errors["base"] = "cannot_connect"
             except Exception:  # pylint: disable=broad-except
