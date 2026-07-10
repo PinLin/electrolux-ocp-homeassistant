@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -90,6 +91,11 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         self._client = client
         self._ws_task: asyncio.Task[None] | None = None
         self._ws_active = False
+        # Consecutive WS connection *failures* (not graceful closes, not the
+        # "no appliance data yet" wait). Drives exponential backoff via
+        # ``_ws_backoff_seconds``; reset to 0 the moment a connection is
+        # actually established.
+        self._ws_consecutive_failures: int = 0
         # Provider chain decides where capability data comes from for each
         # appliance: OCP first, hand-curated PURE A9 fallback second.
         self._capabilities_provider = capabilities_provider or build_default_provider(client)
@@ -343,16 +349,50 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
             raise
         else:
             self._note_polling_success()
+            self._maybe_restart_websocket()
             return data
+
+    def _maybe_restart_websocket(self) -> None:
+        """Revive a WebSocket task that died, once REST polling recovers.
+
+        A WS handshake auth failure sets ``_ws_active = False`` and lets the
+        loop exit; nothing else re-arms it short of an entry reload, so the
+        user silently drops to 30-min polling with no notification. If the task
+        has *finished* (died) while a ws_base_url is still configured, restart
+        it. A task that was never started (``None``) or cleanly stopped
+        (``async_stop_websocket`` clears it to ``None``) is left alone, so this
+        never resurrects the WS after an entry unload.
+        """
+        if not self._client.ws_base_url:
+            return
+        task = self._ws_task
+        if task is not None and task.done() and not self._ws_active:
+            LOGGER.warning(
+                "WebSocket task had died; restarting it after a successful poll"
+            )
+            self.start_websocket()
 
     async def _do_update_data(self) -> ElectroluxData:
         """The actual fetch; wrapped above for repair-issue book-keeping."""
         try:
             await self._client.async_ensure_valid_token()
         except ElectroluxAuthError as err:
+            # Keep the server's reason in the log: the reauth repair issue
+            # outlives log rotation, but the "why" only survives here.
+            LOGGER.error("Token validation failed, starting reauth: %s", err)
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,
                 translation_key="invalid_auth",
+                translation_placeholders={"reason": str(err)},
+            ) from err
+        except ElectroluxApiError as err:
+            # A connection error / 5xx during the *proactive* refresh is not an
+            # auth failure. Route it through UpdateFailed so the failure is
+            # booked by _note_polling_failure instead of escaping as a raw
+            # traceback (and bypassing reauth entirely).
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
                 translation_placeholders={"reason": str(err)},
             ) from err
 
@@ -367,10 +407,12 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         try:
             appliances = await self._client.async_get_appliances()
         except ElectroluxAuthError:
-            # Expiry unknown or server rejected early — fall back to reactive refresh.
+            # Expiry unknown or server rejected early — fall back to reactive
+            # refresh. Refresh and retry are handled in SEPARATE try blocks so
+            # a refresh that the server *accepted* is not conflated with a
+            # retry that still 401s: only the former means dead credentials.
             try:
                 await self._client.async_refresh_token()
-                appliances = await self._client.async_get_appliances()
             except ElectroluxRefreshThrottled as err:
                 # Cooldown blocked the refresh; back off one cycle.
                 raise UpdateFailed(
@@ -386,9 +428,48 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
                     translation_placeholders={"reason": str(err)},
                 ) from err
             except ElectroluxAuthError as err:
+                # The refresh ITSELF was rejected (e.g. invalid_grant): the
+                # refresh token is genuinely dead → reauth is warranted.
+                LOGGER.error(
+                    "Token refresh rejected by server, starting reauth: %s",
+                    err,
+                )
                 raise ConfigEntryAuthFailed(
                     translation_domain=DOMAIN,
                     translation_key="invalid_auth",
+                    translation_placeholders={"reason": str(err)},
+                ) from err
+            except ElectroluxApiError as err:
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="cannot_connect",
+                    translation_placeholders={"reason": str(err)},
+                ) from err
+
+            # Refresh succeeded — the server just minted a fresh access token.
+            try:
+                appliances = await self._client.async_get_appliances()
+            except ElectroluxAuthError as err:
+                # A 401/403 seconds after a server-accepted refresh is far more
+                # likely a transient backend hiccup than revoked credentials
+                # (the server vouched for them moments ago). Back off one cycle
+                # instead of nuking the entry into reauth. If the credentials
+                # really are dead, the next cycle's refresh will fail and this
+                # path will escalate to ConfigEntryAuthFailed above.
+                LOGGER.warning(
+                    "Appliances still rejected right after a successful token "
+                    "refresh; treating as transient and retrying next cycle: %s",
+                    err,
+                )
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="cannot_connect",
+                    translation_placeholders={"reason": str(err)},
+                ) from err
+            except ElectroluxRateLimitError as err:
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="rate_limited",
                     translation_placeholders={"reason": str(err)},
                 ) from err
             except ElectroluxApiError as err:
@@ -447,6 +528,31 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
             self._async_websocket_loop(), "electrolux_ocp_ws"
         )
 
+    def _ws_backoff_seconds(self, *, rate_limited: bool = False) -> float:
+        """Compute the next WS reconnect delay from the current failure streak.
+
+        Called with ``self._ws_consecutive_failures`` still at its
+        *pre-this-failure* value (the caller increments afterward), so the
+        very first failure in a streak backs off at the base delay, not
+        already-doubled.
+
+        Normal path: ``min(WS_BACKOFF_SECONDS * 2**failures, cap) * U(0.5, 1)``
+        — exponential growth capped at ``WS_RATE_LIMIT_BACKOFF_SECONDS``,
+        jittered downward so a fleet of reconnecting entries doesn't
+        thundering-herd OCP in lockstep.
+
+        Rate-limited path: ``WS_RATE_LIMIT_BACKOFF_SECONDS * (1 + U(0, 0.5))``
+        — jitter only ever adds on top of the floor, so OCP's explicit "back
+        off" signal is never undercut regardless of what the RNG returns.
+        """
+        if rate_limited:
+            return WS_RATE_LIMIT_BACKOFF_SECONDS * (1 + random.uniform(0.0, 0.5))
+        delay = min(
+            WS_BACKOFF_SECONDS * (2**self._ws_consecutive_failures),
+            WS_RATE_LIMIT_BACKOFF_SECONDS,
+        )
+        return delay * random.uniform(0.5, 1.0)
+
     async def _async_websocket_loop(self) -> None:
         """Maintain a WebSocket connection for real-time updates.
 
@@ -460,6 +566,11 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         drifted during the silent gap is healed.
         """
         first_connect = True
+        # Declared outside the loop so it survives the ``continue`` after a
+        # refresh: that is what enforces "at most one refresh per connection
+        # cycle". It is reset only once a connection is actually established
+        # (below), which starts a fresh cycle.
+        refreshed_this_cycle = False
         try:
             while self._ws_active:
                 appliance_ids: list[str] = []
@@ -474,11 +585,15 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
                     await asyncio.sleep(WS_NO_DATA_RETRY_SECONDS)
                     continue
 
-                refreshed_this_cycle = False
                 LOGGER.info("Connecting to Electrolux WebSocket (%s)", self._client.ws_base_url)
                 try:
                     async with self._client.ws_connect(appliance_ids) as ws:
                         LOGGER.info("Electrolux WebSocket connected")
+                        # Connection established → new cycle; allow one refresh again.
+                        refreshed_this_cycle = False
+                        # A live connection means the failure streak is over —
+                        # the next failure (if any) backs off from scratch.
+                        self._ws_consecutive_failures = 0
                         if not first_connect:
                             # Non-blocking — must not delay reading WS msgs.
                             LOGGER.debug("WebSocket reconnected; scheduling REST resync")
@@ -501,8 +616,10 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
                         continue
                     await asyncio.sleep(backoff)
                 except Exception as err:  # noqa: BLE001
-                    LOGGER.warning("WebSocket error, retrying in %ss: %s", WS_BACKOFF_SECONDS, err)
-                    await asyncio.sleep(WS_BACKOFF_SECONDS)
+                    backoff = self._ws_backoff_seconds()
+                    self._ws_consecutive_failures += 1
+                    LOGGER.warning("WebSocket error, retrying in %.1fs: %s", backoff, err)
+                    await asyncio.sleep(backoff)
                 else:
                     if self._ws_active:
                         LOGGER.info("WebSocket closed, reconnecting...")
@@ -522,54 +639,66 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         if the caller should reconnect immediately (token was just refreshed).
         """
         if err.status not in (401, 403):
+            backoff = self._ws_backoff_seconds()
+            self._ws_consecutive_failures += 1
             LOGGER.warning(
-                "WebSocket handshake error (%s), retrying in %ss",
-                err.status, WS_BACKOFF_SECONDS,
+                "WebSocket handshake error (%s), retrying in %.1fs",
+                err.status, backoff,
             )
-            return WS_BACKOFF_SECONDS
+            return backoff
 
         if already_refreshed:
+            backoff = self._ws_backoff_seconds()
+            self._ws_consecutive_failures += 1
             LOGGER.warning(
                 "WebSocket auth failed (%s) again after refresh — likely not a "
-                "token issue; backing off %ss",
-                err.status, WS_BACKOFF_SECONDS,
+                "token issue; backing off %.1fs",
+                err.status, backoff,
             )
-            return WS_BACKOFF_SECONDS
+            return backoff
 
         # Heuristic: if the token still has lots of life left, the WS rejection
         # is almost certainly NOT an auth issue. Refreshing now would be both
         # pointless and likely to hit OCP's refresh rate-limit (cas_3404).
         expires_at = self._client.access_token_expires_at
         if expires_at is not None and (expires_at - time.time()) > WS_TOKEN_FRESH_SECONDS:
+            backoff = self._ws_backoff_seconds()
+            self._ws_consecutive_failures += 1
             LOGGER.warning(
                 "WebSocket auth failed (%s) but access token is fresh "
-                "(%.0fs left); not refreshing, backing off %ss",
-                err.status, expires_at - time.time(), WS_BACKOFF_SECONDS,
+                "(%.0fs left); not refreshing, backing off %.1fs",
+                err.status, expires_at - time.time(), backoff,
             )
-            return WS_BACKOFF_SECONDS
+            return backoff
 
         LOGGER.info("WebSocket auth failed (%s); refreshing access token", err.status)
         try:
             await self._client.async_refresh_token()
         except ElectroluxRefreshThrottled as refresh_err:
+            backoff = self._ws_backoff_seconds()
+            self._ws_consecutive_failures += 1
             LOGGER.warning(
-                "WebSocket refresh skipped (%s); backing off %ss",
-                refresh_err, WS_BACKOFF_SECONDS,
+                "WebSocket refresh skipped (%s); backing off %.1fs",
+                refresh_err, backoff,
             )
-            return WS_BACKOFF_SECONDS
+            return backoff
         except ElectroluxRateLimitError as refresh_err:
+            backoff = self._ws_backoff_seconds(rate_limited=True)
+            self._ws_consecutive_failures += 1
             LOGGER.warning(
-                "WebSocket refresh rate-limited by OCP (%s); backing off %ss",
-                refresh_err, WS_RATE_LIMIT_BACKOFF_SECONDS,
+                "WebSocket refresh rate-limited by OCP (%s); backing off %.1fs",
+                refresh_err, backoff,
             )
-            return WS_RATE_LIMIT_BACKOFF_SECONDS
+            return backoff
         except ElectroluxAuthError as refresh_err:
+            backoff = self._ws_backoff_seconds()
+            self._ws_consecutive_failures += 1
             LOGGER.error(
                 "WebSocket token refresh failed; stopping WS until reauth: %s",
                 refresh_err,
             )
             self._ws_active = False
-            return WS_BACKOFF_SECONDS
+            return backoff
         return 0  # immediate reconnect with the freshly refreshed token
 
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:
@@ -648,13 +777,18 @@ class ElectroluxDataUpdateCoordinator(TimestampDataUpdateCoordinator[ElectroluxD
         )
 
     def _note_polling_success(self) -> None:
-        """Reset the failure counter and clear any active polling issue."""
-        if self._consecutive_failures >= POLLING_FAILURE_THRESHOLD:
-            ir.async_delete_issue(
-                self.hass,
-                DOMAIN,
-                f"{ISSUE_POLLING_FAILING}_{self.config_entry.entry_id}",
-            )
+        """Reset the failure counter and clear any active polling issue.
+
+        Delete unconditionally: the failure counter lives in memory and resets
+        to zero on entry reload, so gating the delete on the threshold would
+        strand an issue raised by a previous session forever. Deleting a
+        non-existent issue is a no-op.
+        """
+        ir.async_delete_issue(
+            self.hass,
+            DOMAIN,
+            f"{ISSUE_POLLING_FAILING}_{self.config_entry.entry_id}",
+        )
         self._consecutive_failures = 0
 
     def _async_announce_new_appliances(self, appliances: list[dict[str, Any]]) -> None:
