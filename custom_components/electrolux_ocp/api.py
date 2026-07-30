@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import random
 import time
 import urllib.parse
@@ -367,6 +368,89 @@ def _get_oauth1_signature(secret_key: str, http_method: str, url: str, request_p
     return base64.b64encode(raw_hmac).decode("utf-8")
 
 
+# Upper bound on how far into the future a computed expiry timestamp is
+# allowed to sit. Guards against both a malformed/adversarial `exp` or
+# `expiresIn` (Python's `json.loads` accepts the non-standard `Infinity`/
+# `NaN` literals, and `float("1e400")` silently overflows to `inf` -- no
+# exception raised) and a plausible unit mixup (e.g. a millisecond-epoch
+# value mistaken for seconds, landing ~1000x too far out). Anything outside
+# this range must fail safe to None: an unguarded `inf`/`nan` reaching
+# datetime.fromtimestamp() in the token-expiry sensor's native_value raises
+# OverflowError/ValueError, and that exception escapes
+# DataUpdateCoordinator.async_update_listeners() uncaught, silently
+# dropping every entity update scheduled after the sensor's in that cycle.
+_MAX_TOKEN_LIFETIME_SECONDS = 10 * 365 * 24 * 3600  # 10 years
+
+
+def _sanitize_expires_at(value: float | None) -> float | None:
+    """Clamp a computed `_access_token_expires_at` candidate to a sane range.
+
+    Applied at every site that assigns `_access_token_expires_at` (both the
+    JWT-`exp` path and the `expiresIn` path), not just inside
+    `_decode_jwt_exp`, so a future direct assignment can't reintroduce the
+    hazard by skipping the JWT decoder.
+    """
+    if value is None:
+        return None
+    if not math.isfinite(value):
+        return None
+    if value <= 0 or value > time.time() + _MAX_TOKEN_LIFETIME_SECONDS:
+        return None
+    return value
+
+
+def _decode_jwt_payload(token: str | None) -> dict[str, Any] | None:
+    """Best-effort base64/JSON decode of a JWT's payload segment.
+
+    No signature verification is performed: callers use this to read claims
+    out of a token the client itself already holds (its own access token or
+    the id_token it just received from the identity provider during login),
+    not to validate an externally supplied credential, so there is no trust
+    boundary to enforce here.
+
+    Fails safe by returning None on anything malformed rather than raising,
+    so callers on setup-critical paths (client construction, login) don't
+    have to guard against a handful of different decode exceptions.
+    """
+    try:
+        parts = token.split(".") if token else []
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+        return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _decode_jwt_exp(token: str | None) -> float | None:
+    """Best-effort extraction of the `exp` claim from a JWT access token.
+
+    The access token is a JWT whose `exp` claim survives a restart even
+    though `_access_token_expires_at` (in-memory only) does not. This lets a
+    freshly constructed client recover a proactive-refresh deadline without
+    persisting anything new.
+
+    Observed shape (real OCP access token, checked 2026-07-22, not persisted
+    here -- only its shape/magnitude): a standard 3-segment JWT whose `exp`
+    (like `iat`) is a second-resolution Unix timestamp, with an observed
+    token lifetime of 12 hours.
+
+    Runs on the integration setup path (client construction) and after every
+    token apply, so any malformed input -- including `token=None` -- must
+    fail safe by returning None rather than raising -- an exception here
+    would prevent the integration from starting.
+    """
+    payload = _decode_jwt_payload(token)
+    if payload is None:
+        return None
+    exp = payload.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return None
+    return _sanitize_expires_at(float(exp))
+
+
 class ElectroluxApiClient:
     """Minimal Electrolux client based on app reverse-engineering."""
 
@@ -393,7 +477,12 @@ class ElectroluxApiClient:
         self._password = password
         self._client_id = "ElxOneApp"
         self._client_secret = "8UKrsKD7jH9zvTV7rz5HeCLkit67Mmj68FvRVTlYygwJYy4dW6KF2cVLPKeWzUQUd6KJMtTifFf4NkDnjI7ZLdfnwcPtTSNtYvbP7OzEkmQD9IjhMOf5e1zeAQYtt2yN"
-        self._access_token_expires_at: float | None = None
+        # Seed the proactive-refresh deadline from the JWT itself so a fresh
+        # client (post-restart / entry reload) doesn't have to wait for a
+        # reactive 401 before it knows the token is about to expire.
+        self._access_token_expires_at: float | None = (
+            _decode_jwt_exp(access_token) if access_token else None
+        )
         self._ws_base_url = _normalize_base_url(ws_base_url) if ws_base_url else None
         self._last_refresh_at: float | None = None
         self._last_refresh_status: str | None = None
@@ -466,12 +555,13 @@ class ElectroluxApiClient:
         json_body: Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        skip_auth: bool = False,
     ) -> Any:
         request_headers = {
             "Accept": "application/json",
             "User-Agent": USER_AGENT,
         }
-        if self._access_token:
+        if self._access_token and not skip_auth:
             request_headers["Authorization"] = f"Bearer {self._access_token}"
         if self._api_key:
             request_headers["x-api-key"] = self._api_key
@@ -657,7 +747,12 @@ class ElectroluxApiClient:
         id_token = jwt_data["id_token"]
 
         # 6. One Account token exchange
-        decoded_jwt = json.loads(base64.b64decode(id_token.split(".")[1] + "==").decode("utf-8"))
+        decoded_jwt = _decode_jwt_payload(id_token)
+        if decoded_jwt is None:
+            # A malformed id_token here would otherwise leak a raw
+            # binascii/JSONDecodeError/IndexError out of async_login instead
+            # of the ElectroluxAuthError callers expect on login failure.
+            raise ElectroluxAuthError("Gigya getJWT returned a malformed id_token")
         origin_country = decoded_jwt.get("country", self._country_code)
 
         token_data = await self._request(
@@ -726,6 +821,19 @@ class ElectroluxApiClient:
                         "scope": "",
                     },
                     headers={"x-api-key": self._api_key},
+                    # pyelectroluxgroup (the reference implementation this
+                    # client was reverse-engineered against) sends the
+                    # refresh request with skip_auth_headers=True, implying
+                    # the endpoint authenticates via the refreshToken in the
+                    # body rather than the access token -- this is inferred
+                    # from that reference behaviour, not confirmed against
+                    # OCP's server-side contract. The access token being
+                    # refreshed may already be expired (that's often why
+                    # we're here), and sending it gains nothing while risking
+                    # the server rejecting a request that carries an expired
+                    # Bearer credential -- not confirmed as the cause of any
+                    # specific past failure, just not worth the risk.
+                    skip_auth=True,
                 )
             except ElectroluxApiError as err:
                 text = str(err)
@@ -768,17 +876,31 @@ class ElectroluxApiClient:
             expires_in_f = float(expires_in) if expires_in is not None else None
         except (TypeError, ValueError):
             expires_in_f = None
+
+        expires_at_from_expires_in: float | None = None
         if expires_in_f and expires_in_f > 0:
-            self._access_token_expires_at = time.time() + expires_in_f
+            expires_at_from_expires_in = _sanitize_expires_at(time.time() + expires_in_f)
+
+        if expires_at_from_expires_in is not None:
+            self._access_token_expires_at = expires_at_from_expires_in
         else:
-            self._access_token_expires_at = None
+            # expiresIn absent/invalid/out-of-range (see _sanitize_expires_at):
+            # fall back to the new access token's own JWT `exp` claim rather
+            # than giving up on proactive refresh entirely (see
+            # _decode_jwt_exp docstring for why no signature check is needed
+            # here). _decode_jwt_exp already applies the same range guard.
+            self._access_token_expires_at = _decode_jwt_exp(self._access_token)
 
         self._last_refresh_at = time.time()
         self._last_refresh_status = "ok"
-        _LOGGER.info(
-            "Electrolux token applied (expires_in=%s)",
-            int(expires_in_f) if expires_in_f else "unknown",
-        )
+        if self._access_token_expires_at is None:
+            _LOGGER.info("Electrolux token applied (expires_at=unknown)")
+        else:
+            _LOGGER.info(
+                "Electrolux token applied (expires_at=%d, source=%s)",
+                self._access_token_expires_at,
+                "expiresIn" if expires_at_from_expires_in is not None else "jwt_exp",
+            )
 
         if self._on_token_update is not None:
             try:

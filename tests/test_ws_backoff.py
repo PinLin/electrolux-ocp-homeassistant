@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,6 +32,7 @@ from custom_components.electrolux_ocp.const import (
 from custom_components.electrolux_ocp.coordinator import (
     ElectroluxDataUpdateCoordinator,
     WS_RATE_LIMIT_BACKOFF_SECONDS,
+    WS_TOKEN_FRESH_SECONDS,
 )
 from custom_components.electrolux_ocp.models import ElectroluxData
 
@@ -233,6 +235,37 @@ async def test_ws_auth_death_exits_loop_without_sleeping(
     assert sleeps == []
     assert coord._ws_active is False
     coord._client.ws_connect.assert_called_once()
+
+
+async def test_handshake_error_fresh_token_skips_refresh_and_backs_off(
+    hass: HomeAssistant,
+) -> None:
+    """A 401 while the access token still has plenty of life left must not
+    trigger a refresh -- refreshing here would be both pointless and risks
+    hitting OCP's refresh rate limit (cas_3404).
+
+    This branch was unreachable before the JWT-`exp` fallback existed: every
+    fixture pinned `access_token_expires_at` to None (see the other tests in
+    this module), which is exactly what a freshly restarted client used to
+    look like -- no test ever exercised the "fresh token" side of this
+    condition. Now that the fallback seeds a real value on construction and
+    after every token apply, this branch is live in production and needs
+    its own coverage.
+    """
+    coord = _make_coordinator(hass)
+    coord._client.access_token_expires_at = time.time() + WS_TOKEN_FRESH_SECONDS + 100
+    coord._client.async_refresh_token = AsyncMock()
+    err = WSServerHandshakeError(MagicMock(), (), status=401, message="denied")
+
+    with patch(
+        "custom_components.electrolux_ocp.coordinator.random.uniform",
+        return_value=0.5,
+    ):
+        backoff = await coord._handle_ws_handshake_error(err, False)
+
+    assert backoff == pytest.approx(30 * 0.5)
+    coord._client.async_refresh_token.assert_not_called()
+    assert coord._ws_consecutive_failures == 1
 
 
 async def test_handshake_error_rate_limited_branch_uses_floor_and_increments(
