@@ -821,18 +821,20 @@ class ElectroluxApiClient:
                         "scope": "",
                     },
                     headers={"x-api-key": self._api_key},
-                    # pyelectroluxgroup (the reference implementation this
-                    # client was reverse-engineered against) sends the
-                    # refresh request with skip_auth_headers=True, implying
-                    # the endpoint authenticates via the refreshToken in the
-                    # body rather than the access token -- this is inferred
-                    # from that reference behaviour, not confirmed against
-                    # OCP's server-side contract. The access token being
-                    # refreshed may already be expired (that's often why
-                    # we're here), and sending it gains nothing while risking
-                    # the server rejecting a request that carries an expired
-                    # Bearer credential -- not confirmed as the cause of any
-                    # specific past failure, just not worth the risk.
+                    # The token endpoint rejects a request that carries an
+                    # expired Bearer credential, even when the refreshToken in
+                    # the body is still perfectly valid. Measured against
+                    # api.ap.ocp.electrolux.one on 2026-07-30 with one
+                    # 8-day-old refresh token, identical bodies, 5s apart:
+                    # with the expired Authorization header -> HTTP 401 (empty
+                    # body); without it -> HTTP 200 and a fresh token pair.
+                    # Since _request() otherwise attaches Authorization
+                    # unconditionally, and the access token being refreshed is
+                    # usually expired (that's why we're here), leaving it on
+                    # turned every post-expiry refresh into a hard auth
+                    # failure -- the cause of the 2026-07-22 spurious reauth.
+                    # pyelectroluxgroup, the reference implementation, likewise
+                    # sends this request with skip_auth_headers=True.
                     skip_auth=True,
                 )
             except ElectroluxApiError as err:
