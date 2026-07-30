@@ -79,7 +79,14 @@ class ElectroluxBaseEntity(CoordinatorEntity[ElectroluxDataUpdateCoordinator]):
         """Recompute the snapshot. Return True if it differs from the prior one."""
         if not self._state_attrs:
             return True
-        snapshot = tuple(getattr(self, attr, None) for attr in self._state_attrs)
+        # `available` is folded into the snapshot alongside the value
+        # properties so a coordinator refresh failure (last_update_success
+        # flips False while coordinator.data is left untouched) still
+        # broadcasts. Without it, a failed refresh that doesn't change any
+        # tracked value is invisible to this guard and the entity never
+        # transitions to unavailable in HA's state machine (and, on
+        # recovery, never clears it either).
+        snapshot = (self.available, *(getattr(self, attr, None) for attr in self._state_attrs))
         if snapshot != self._last_broadcast_state:
             self._last_broadcast_state = snapshot
             return True
