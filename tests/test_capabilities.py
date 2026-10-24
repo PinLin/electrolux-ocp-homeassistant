@@ -110,16 +110,39 @@ async def test_chain_falls_through_to_static_when_ocp_404():
 
 
 @pytest.mark.asyncio
-async def test_chain_prefers_ocp_response_when_available():
+async def test_chain_prefers_ocp_entry_on_key_conflict():
+    ocp_pm = {"access": "read", "type": "number", "min": 0, "max": 65535, "step": 1}
     client = MagicMock()
     client.async_get_capabilities = AsyncMock(
-        return_value={"Custom": {"access": "read", "type": "int"}}
+        return_value={"Custom": {"access": "read", "type": "int"}, "PM2_5": ocp_pm}
     )
     chain = ChainCapabilitiesProvider(
         [OcpV2CapabilitiesProvider(client), StaticPureA9Provider()]
     )
     caps = await chain.async_fetch(PURE_A9_APPLIANCE)
-    assert caps == {"Custom": {"access": "read", "type": "int"}}
+    assert caps["Custom"] == {"access": "read", "type": "int"}
+    assert caps["PM2_5"] == ocp_pm
+
+
+@pytest.mark.asyncio
+async def test_chain_fills_keys_missing_from_partial_ocp_schema():
+    # Real PUREA9 response observed 2026-10: controls + PM/TVOC only, while
+    # the device still reports Temp and Humidity.
+    client = MagicMock()
+    client.async_get_capabilities = AsyncMock(
+        return_value={
+            "PM2_5": {"access": "read", "type": "number"},
+            "TVOC": {"access": "read", "type": "number"},
+            "Fanspeed": {"access": "readwrite", "type": "int", "min": 1, "max": 9},
+        }
+    )
+    chain = ChainCapabilitiesProvider(
+        [OcpV2CapabilitiesProvider(client), StaticPureA9Provider()]
+    )
+    caps = await chain.async_fetch(PURE_A9_APPLIANCE)
+    for key in ("Temp", "Humidity", "ECO2", "FilterLife", "ErrTempHumidity"):
+        assert key in caps
+    assert caps["PM2_5"]["type"] == "number"
 
 
 @pytest.mark.asyncio

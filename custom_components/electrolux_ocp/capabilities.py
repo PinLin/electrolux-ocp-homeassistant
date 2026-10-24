@@ -1,15 +1,18 @@
 """Capability schema and providers.
 
 OCP exposes property capability documents at
-``/appliance/api/v2/appliances/{id}/capabilities``, but the endpoint returns
-404 for every air purifier in the WellbeingA9/Muju line: the OneApp Android
-app builds those screens from hard-coded Kotlin model enums, not from a
-runtime schema. The integration therefore needs more than one source of
-capability data and a way to compose them.
+``/appliance/api/v2/appliances/{id}/capabilities``, but for the
+WellbeingA9/Muju air-purifier line it either returns 404 or only a partial
+schema (controls plus PM/TVOC, without Temp, Humidity, ECO2, FilterLife or
+the error flags the device still reports): the OneApp Android app builds
+those screens from hard-coded Kotlin model enums, not from a runtime schema.
+The integration therefore needs more than one source of capability data and
+a way to compose them.
 
 A ``CapabilitiesProvider`` returns a ``CapabilityDict`` for a given appliance,
 or ``None`` if the provider has no opinion. The coordinator chains providers
-in priority order and takes the first non-None answer:
+in priority order and merges their answers key by key, earlier providers
+winning on conflicts:
 
     OcpV2CapabilitiesProvider   ->  works for any device OCP exposes
     StaticPureA9Provider        ->  hand-curated schema for WellbeingA9 / Muju
@@ -415,17 +418,23 @@ class StaticPureA9Provider:
 
 
 class ChainCapabilitiesProvider:
-    """Tries providers in order; first non-empty result wins."""
+    """Merges every provider's answer; earlier providers win per key.
+
+    Merging rather than first-wins matters because OCP can return a partial
+    schema for a device a later provider knows fully.
+    """
 
     def __init__(self, providers: list[CapabilitiesProvider]) -> None:
         self._providers = providers
 
     async def async_fetch(self, appliance: dict[str, Any]) -> CapabilityDict | None:
+        merged: CapabilityDict = {}
         for provider in self._providers:
             result = await provider.async_fetch(appliance)
             if result:
-                return result
-        return None
+                for key, cap in result.items():
+                    merged.setdefault(key, cap)
+        return merged or None
 
 
 def build_default_provider(client: ElectroluxApiClient) -> CapabilitiesProvider:
