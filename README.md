@@ -2,7 +2,6 @@
 
 [![GitHub Release](https://img.shields.io/github/release/PinLin/electrolux-ocp-homeassistant.svg?style=flat-square)](https://github.com/PinLin/electrolux-ocp-homeassistant/releases)
 [![HACS Badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=flat-square)](https://github.com/hacs/integration)
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
 Home Assistant integration for Electrolux smart appliances. Connects with your Electrolux account to expose real-time status and remote control as native Home Assistant entities.
 
@@ -188,8 +187,4 @@ This project is an unofficial, community-maintained integration. It is **not aff
 
 The integration interacts with private Electrolux services originally intended for the official Electrolux mobile applications. These services may change, become rate-limited, or be withdrawn at any time without notice, which may break this integration. Use at your own risk.
 
-The software is provided "as is" without any warranty (see [LICENSE](LICENSE)) and the maintainers accept no liability for any consequences of its use, including but not limited to account suspension, appliance malfunction, or data loss.
-
-## License
-
-[MIT License](LICENSE)
+The software is provided "as is" without any warranty and the maintainers accept no liability for any consequences of its use, including but not limited to account suspension, appliance malfunction, or data loss.
